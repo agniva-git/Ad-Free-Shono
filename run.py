@@ -21,7 +21,7 @@ def main():
     port = settings.PORT
 
     print("\n" + "=" * 60)
-    print("🎵  PERSONAL MUSIC CLOUD — ZERO-COST STREAMING SERVER")
+    print("🎵  ADFREESHONO — ZERO-COST STREAMING SERVER")
     print("=" * 60)
     print(f"  💻 On this PC:          http://localhost:{port}")
     print(f"  📱 On your Phone/Wi-Fi: http://{local_ip}:{port}")

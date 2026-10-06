@@ -7,7 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    PROJECT_NAME: str = "Personal Music Cloud"
+    PROJECT_NAME: str = "AdFreeShono"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = True

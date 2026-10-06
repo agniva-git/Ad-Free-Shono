@@ -82,7 +82,7 @@ async function renderHomeView(container) {
   container.innerHTML = `
     <div class="view-header">
       <div>
-        <h2>Welcome to your Personal Music Cloud</h2>
+        <h2>Welcome to AdFreeShono</h2>
         <p>Your self-hosted, zero-cost personal music library</p>
       </div>
     </div>

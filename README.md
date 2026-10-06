@@ -1,4 +1,4 @@
-# Personal Music Cloud (AdFree) 🎵
+# AdFreeShono 🎵
 
 A self-hosted, **100% Zero-Cost (₹0 / $0 recurring)** personal music library, streaming server, and installable PWA.
 
