@@ -171,6 +171,32 @@ def toggle_favorite(song_id: str, db: Session = Depends(get_db)):
         db.commit()
         return {"song_id": song_id, "is_favorite": True}
 
+@router.get("/history/recent", response_model=List[SongResponse])
+def get_recently_played(limit: int = 20, db: Session = Depends(get_db)):
+    # Fetch most recently played distinct songs
+    recent_entries = db.query(
+        PlayHistory.song_id,
+        func.max(PlayHistory.played_at).label("latest_played")
+    ).group_by(PlayHistory.song_id)\
+     .order_by(func.max(PlayHistory.played_at).desc())\
+     .limit(limit)\
+     .all()
+
+    if not recent_entries:
+        return []
+
+    song_ids = [entry[0] for entry in recent_entries]
+    songs = db.query(Song).options(
+        joinedload(Song.artist),
+        joinedload(Song.album),
+        joinedload(Song.favorite_entry)
+    ).filter(Song.id.in_(song_ids)).all()
+
+    # Preserve recent playback order
+    song_map = {s.id: s for s in songs}
+    ordered_songs = [song_map[sid] for sid in song_ids if sid in song_map]
+    return [format_song_response(s) for s in ordered_songs]
+
 @router.post("/{song_id}/history")
 def record_history(song_id: str, db: Session = Depends(get_db)):
     song = db.query(Song).filter(Song.id == song_id).first()

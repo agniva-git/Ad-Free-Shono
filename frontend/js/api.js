@@ -35,6 +35,11 @@ export const API = {
     return res.json();
   },
 
+  async getRecentlyPlayed() {
+    const res = await fetch(`${API_BASE}/songs/history/recent`);
+    return res.json();
+  },
+
   async recordHistory(id) {
     try {
       await fetch(`${API_BASE}/songs/${id}/history`, { method: 'POST' });
