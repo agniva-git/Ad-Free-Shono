@@ -6,14 +6,27 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from ..database import get_db
-from ..models import Song, Artist, Album, Favorite, PlayHistory
+from ..models import Song, Artist, Album, Favorite, PlayHistory, User
 from ..schemas import SongResponse, SongUpdate
+from ..security import get_current_user
 from ..services.streaming import send_file_range_response
 from ..services.helpers import format_song_response
 from ..services.library import internal_audio_path, locate_audio, prune_empty
 from ..config import settings
 
 router = APIRouter(prefix="/songs", tags=["Songs"])
+
+
+def _load_song(song_id: str, db: Session) -> Song:
+    song = db.query(Song).options(
+        joinedload(Song.artist),
+        joinedload(Song.album),
+        joinedload(Song.favorite_entries),
+    ).filter(Song.id == song_id).first()
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+    return song
+
 
 @router.get("", response_model=List[SongResponse])
 def get_songs(
@@ -23,16 +36,18 @@ def get_songs(
     favorites_only: bool = False,
     sort_by: str = "title",
     order: str = "asc",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     query = db.query(Song).options(
         joinedload(Song.artist),
         joinedload(Song.album),
-        joinedload(Song.favorite_entry)
+        joinedload(Song.favorite_entries),
     )
 
+    # favorites_only filters to *this user's* favorites
     if favorites_only:
-        query = query.join(Favorite, Song.id == Favorite.song_id)
+        query = query.join(Favorite, (Song.id == Favorite.song_id) & (Favorite.user_id == current_user.id))
 
     if artist_id:
         query = query.filter(Song.artist_id == artist_id)
@@ -48,7 +63,6 @@ def get_songs(
             (Album.title.ilike(search_filter))
         )
 
-    # Sorting
     if sort_by == "created_at":
         sort_col = Song.created_at
     elif sort_by == "duration":
@@ -62,22 +76,18 @@ def get_songs(
         query = query.order_by(sort_col.asc())
 
     songs = query.all()
-    return [format_song_response(s) for s in songs]
+    return [format_song_response(s, user_id=current_user.id) for s in songs]
+
 
 @router.get("/{song_id}", response_model=SongResponse)
-def get_song(song_id: str, db: Session = Depends(get_db)):
-    song = db.query(Song).options(
-        joinedload(Song.artist),
-        joinedload(Song.album),
-        joinedload(Song.favorite_entry)
-    ).filter(Song.id == song_id).first()
+def get_song(song_id: str, db: Session = Depends(get_db),
+             current_user: User = Depends(get_current_user)):
+    return format_song_response(_load_song(song_id, db), user_id=current_user.id)
 
-    if not song:
-        raise HTTPException(status_code=404, detail="Song not found")
-    return format_song_response(song)
 
 @router.patch("/{song_id}", response_model=SongResponse)
-def update_song(song_id: str, updates: SongUpdate, db: Session = Depends(get_db)):
+def update_song(song_id: str, updates: SongUpdate, db: Session = Depends(get_db),
+                current_user: User = Depends(get_current_user)):
     song = db.query(Song).filter(Song.id == song_id).first()
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
@@ -116,18 +126,18 @@ def update_song(song_id: str, updates: SongUpdate, db: Session = Depends(get_db)
             song.album_id = None
 
     db.commit()
-    prune_empty(db)  # the song may have left an artist/album with nothing in it
+    prune_empty(db)
     db.refresh(song)
-    return format_song_response(song)
+    return format_song_response(_load_song(song_id, db), user_id=current_user.id)
+
 
 @router.delete("/{song_id}")
-def delete_song(song_id: str, delete_file: bool = True, db: Session = Depends(get_db)):
+def delete_song(song_id: str, delete_file: bool = True, db: Session = Depends(get_db),
+                current_user: User = Depends(get_current_user)):
     song = db.query(Song).filter(Song.id == song_id).first()
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
 
-    # Only files inside the app's own storage may be removed. Scanned (zero-copy)
-    # songs point at the user's own folders, so those files are always left alone.
     owned_file = internal_audio_path(song.audio_path) if (delete_file and song.audio_path) else None
 
     db.delete(song)
@@ -144,8 +154,10 @@ def delete_song(song_id: str, delete_file: bool = True, db: Session = Depends(ge
     prune_empty(db)
     return {"message": "Song deleted successfully", "id": song_id, "file_deleted": file_deleted}
 
+
 @router.get("/{song_id}/stream")
-def stream_song(song_id: str, range: Optional[str] = Header(None), db: Session = Depends(get_db)):
+def stream_song(song_id: str, range: Optional[str] = Header(None), db: Session = Depends(get_db),
+                current_user: User = Depends(get_current_user)):
     song = db.query(Song).filter(Song.id == song_id).first()
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
@@ -156,30 +168,38 @@ def stream_song(song_id: str, range: Optional[str] = Header(None), db: Session =
 
     return send_file_range_response(file_path, range)
 
+
 @router.post("/{song_id}/favorite")
-def toggle_favorite(song_id: str, db: Session = Depends(get_db)):
+def toggle_favorite(song_id: str, db: Session = Depends(get_db),
+                    current_user: User = Depends(get_current_user)):
     song = db.query(Song).filter(Song.id == song_id).first()
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
 
-    fav = db.query(Favorite).filter(Favorite.song_id == song_id).first()
+    fav = db.query(Favorite).filter(
+        Favorite.song_id == song_id,
+        Favorite.user_id == current_user.id
+    ).first()
     if fav:
         db.delete(fav)
         db.commit()
         return {"song_id": song_id, "is_favorite": False}
     else:
-        new_fav = Favorite(song_id=song_id)
+        new_fav = Favorite(song_id=song_id, user_id=current_user.id)
         db.add(new_fav)
         db.commit()
         return {"song_id": song_id, "is_favorite": True}
 
+
 @router.get("/history/recent", response_model=List[SongResponse])
-def get_recently_played(limit: int = 20, db: Session = Depends(get_db)):
-    # Fetch most recently played distinct songs
+def get_recently_played(limit: int = 20, db: Session = Depends(get_db),
+                        current_user: User = Depends(get_current_user)):
+    """Return the current user's recently played distinct songs."""
     recent_entries = db.query(
         PlayHistory.song_id,
         func.max(PlayHistory.played_at).label("latest_played")
-    ).group_by(PlayHistory.song_id)\
+    ).filter(PlayHistory.user_id == current_user.id)\
+     .group_by(PlayHistory.song_id)\
      .order_by(func.max(PlayHistory.played_at).desc())\
      .limit(limit)\
      .all()
@@ -191,21 +211,23 @@ def get_recently_played(limit: int = 20, db: Session = Depends(get_db)):
     songs = db.query(Song).options(
         joinedload(Song.artist),
         joinedload(Song.album),
-        joinedload(Song.favorite_entry)
+        joinedload(Song.favorite_entries),
     ).filter(Song.id.in_(song_ids)).all()
 
-    # Preserve recent playback order
     song_map = {s.id: s for s in songs}
     ordered_songs = [song_map[sid] for sid in song_ids if sid in song_map]
-    return [format_song_response(s) for s in ordered_songs]
+    return [format_song_response(s, user_id=current_user.id) for s in ordered_songs]
+
 
 @router.post("/{song_id}/history")
-def record_history(song_id: str, db: Session = Depends(get_db)):
+def record_history(song_id: str, db: Session = Depends(get_db),
+                   current_user: User = Depends(get_current_user)):
     song = db.query(Song).filter(Song.id == song_id).first()
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
 
-    entry = PlayHistory(song_id=song_id, played_at=datetime.now(timezone.utc))
+    entry = PlayHistory(song_id=song_id, user_id=current_user.id,
+                        played_at=datetime.now(timezone.utc))
     db.add(entry)
     db.commit()
     return {"message": "Recorded playback history"}

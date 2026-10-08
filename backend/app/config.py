@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     MUSIC_DIR: str = "./data/media/audio"
     ARTWORK_DIR: str = "./data/media/artwork"
 
-    # Leave ACCESS_PASSWORD empty to disable login (only do that on localhost).
-    ACCESS_PASSWORD: str = ""
+    # First-time admin bootstrap. After the first admin exists, these are ignored.
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
+    # Must be a long random string. Generate with:
+    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
     SECRET_KEY: str = "change-this-to-a-long-random-string"
     MAX_UPLOAD_MB: int = 500
 

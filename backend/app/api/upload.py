@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..models import Album, Artist, Song
+from ..models import Album, Artist, Song, User
 from ..schemas import SongResponse
+from ..security import get_current_user
 from ..services.helpers import format_song_response
 from ..services.metadata import extract_metadata
 
@@ -19,8 +20,6 @@ ALLOWED_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
 COPY_CHUNK = 1024 * 1024
 
 
-# Plain "def" (not "async def"): the file copy is blocking, so FastAPI runs it in a
-# worker thread instead of freezing the event loop while a big file uploads.
 @router.post("", response_model=SongResponse, status_code=status.HTTP_201_CREATED)
 def upload_audio(
     file: UploadFile = File(...),
@@ -29,6 +28,7 @@ def upload_audio(
     album: Optional[str] = Form(None),
     genre: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     original_filename = file.filename or "unknown.mp3"
     ext = Path(original_filename).suffix.lower()
@@ -36,7 +36,7 @@ def upload_audio(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '{ext}'. Allowed formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            detail=f"Unsupported file format '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
     file_id = str(uuid.uuid4())
@@ -90,6 +90,7 @@ def upload_audio(
             title=final_title,
             artist_id=artist_obj.id,
             album_id=album_obj.id,
+            uploader_id=current_user.id,      # <-- track who uploaded
             audio_path=stored_filename,
             original_filename=original_filename,
             duration_seconds=meta["duration_seconds"],
@@ -101,11 +102,10 @@ def upload_audio(
         db.commit()
         db.refresh(song)
     except BaseException:
-        # Never leave a half-written file or a half-finished DB transaction behind
         db.rollback()
         dest_path.unlink(missing_ok=True)
         raise
     finally:
         file.file.close()
 
-    return format_song_response(song)
+    return format_song_response(song, user_id=current_user.id)

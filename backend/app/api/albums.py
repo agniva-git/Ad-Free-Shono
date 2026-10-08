@@ -1,17 +1,18 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from ..database import get_db
 from ..models import Album, Song, Artist
 from ..schemas import AlbumResponse, SongResponse
+from ..security import get_current_user
 from ..services.helpers import format_song_response
 
 router = APIRouter(prefix="/albums", tags=["Albums"])
 
 @router.get("", response_model=List[AlbumResponse])
-def get_albums(db: Session = Depends(get_db)):
+def get_albums(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     albums_with_data = db.query(
         Album,
         Artist.name.label("artist_name"),
@@ -37,12 +38,14 @@ def get_albums(db: Session = Depends(get_db)):
     return result
 
 @router.get("/{album_id}")
-def get_album_detail(album_id: str, db: Session = Depends(get_db)):
+def get_album_detail(album_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     album = db.query(Album).filter(Album.id == album_id).first()
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
 
-    songs = db.query(Song).filter(Song.album_id == album_id).order_by(Song.title.asc()).all()
+    songs = db.query(Song).options(
+        joinedload(Song.artist), joinedload(Song.album), joinedload(Song.favorite_entries)
+    ).filter(Song.album_id == album_id).order_by(Song.title.asc()).all()
     artist_name = album.artist.name if album.artist else "Unknown Artist"
 
     return {
@@ -56,5 +59,5 @@ def get_album_detail(album_id: str, db: Session = Depends(get_db)):
             created_at=album.created_at,
             song_count=len(songs)
         ),
-        "songs": [format_song_response(s) for s in songs]
+        "songs": [format_song_response(s, user_id=current_user.id) for s in songs]
     }

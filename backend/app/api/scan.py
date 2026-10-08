@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
+from ..models import User
+from ..security import get_current_user
 from ..services.scanner import is_safe_directory, scan_directory
 
 router = APIRouter(prefix="/scan", tags=["Scan"])
@@ -18,7 +20,8 @@ class ScanRequest(BaseModel):
 
 
 @router.post("")
-def trigger_scan(payload: ScanRequest, db: Session = Depends(get_db)):
+def trigger_scan(payload: ScanRequest, db: Session = Depends(get_db),
+                 current_user: User = Depends(get_current_user)):
     target = Path(payload.directory_path).expanduser() if payload.directory_path else settings.music_path
 
     if not target.exists() or not target.is_dir():

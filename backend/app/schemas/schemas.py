@@ -2,6 +2,14 @@ from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
+# --- User Schemas ---
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    username: str
+    is_admin: bool
+    created_at: datetime
+
 # --- Artist Schemas ---
 class ArtistBase(BaseModel):
     name: str
@@ -53,6 +61,7 @@ class SongResponse(BaseModel):
     bitrate: Optional[int] = None
     created_at: datetime
     is_favorite: bool = False
+    uploader_id: Optional[str] = None
 
 # --- Playlist Schemas ---
 class PlaylistCreate(BaseModel):

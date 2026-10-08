@@ -7,12 +7,38 @@ from fastapi.staticfiles import StaticFiles
 from .api import albums, artists, auth, playlists, scan, search, songs, stats, upload
 from .config import settings
 from .database import Base, SessionLocal, engine
-from .security import add_security_headers, auth_enabled, check_security_config, guard_api
+from .security import add_security_headers, check_security_config, guard_api, hash_password
 from .services.library import prune_empty, sweep_unused_artwork
 
-check_security_config()  # stops the server if the password/secret are missing or placeholders
+check_security_config()  # stops the server if the secret key is missing or a placeholder
 settings.ensure_directories()
 Base.metadata.create_all(bind=engine)
+
+
+def bootstrap_admin():
+    """If no users exist yet, create the initial admin account from ADMIN_USERNAME / ADMIN_PASSWORD.
+    This only runs once — after that, admins manage accounts through the API.
+    """
+    from .models import User
+    db = SessionLocal()
+    try:
+        if db.query(User).count() == 0:
+            uname = settings.ADMIN_USERNAME
+            pw = settings.ADMIN_PASSWORD
+            if uname and pw:
+                admin = User(
+                    username=uname,
+                    password_hash=hash_password(pw),
+                    is_admin=True,
+                )
+                db.add(admin)
+                db.commit()
+                print(f"[AdFreeShono] Created initial admin account: {uname!r}")
+            else:
+                print("[AdFreeShono] WARNING: No users exist and ADMIN_USERNAME/ADMIN_PASSWORD are not set. "
+                      "Set them in .env and restart to create the first admin account.")
+    finally:
+        db.close()
 
 
 def startup_cleanup():
@@ -25,12 +51,13 @@ def startup_cleanup():
         db.close()
 
 
+bootstrap_admin()
 startup_cleanup()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Zero-Cost Personal Music Cloud and Streaming Server",
-    version="1.2.0",
+    version="2.0.0",
     # The auto-generated API docs are only available while DEBUG is on
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url=None,
@@ -39,7 +66,7 @@ app = FastAPI(
 
 # The frontend is served by this same app, so no CORS is needed. Without CORS, other
 # websites cannot read the API from a browser. The guard also blocks cross-origin
-# writes and enforces the login cookie when ACCESS_PASSWORD is set.
+# writes and enforces the login cookie.
 app.middleware("http")(guard_api)
 app.middleware("http")(add_security_headers)  # added last, so it wraps every response
 
@@ -51,7 +78,7 @@ for module in (auth, songs, artists, albums, playlists, upload, search, stats, s
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "service": settings.PROJECT_NAME, "auth": auth_enabled()}
+    return {"status": "healthy", "service": settings.PROJECT_NAME}
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
