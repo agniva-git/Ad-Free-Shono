@@ -53,6 +53,7 @@ class Song(Base):
     album = relationship("Album", back_populates="songs")
     playlist_entries = relationship("PlaylistSong", back_populates="song", cascade="all, delete-orphan")
     favorite_entry = relationship("Favorite", back_populates="song", uselist=False, cascade="all, delete-orphan")
+    history = relationship("PlayHistory", back_populates="song", cascade="all, delete-orphan", passive_deletes=True)
 
 class Playlist(Base):
     __tablename__ = "playlists"
@@ -96,4 +97,4 @@ class PlayHistory(Base):
     song_id = Column(String(36), ForeignKey("songs.id", ondelete="CASCADE"), nullable=False)
     played_at = Column(DateTime, default=utc_now)
 
-    song = relationship("Song")
+    song = relationship("Song", back_populates="history")

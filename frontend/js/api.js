@@ -1,141 +1,53 @@
-const API_BASE = '/api';
+const BASE = '/api';
+
+export class AuthError extends Error {}
+
+async function request(path, options = {}) {
+  const res = await fetch(BASE + path, options);
+  if (res.status === 401) throw new AuthError('Login required');
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* body was not JSON */ }
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+  return res.json();
+}
+
+const send = (method, body) => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
 
 export const API = {
-  async getSongs(params = {}) {
-    const query = new URLSearchParams(params).toString();
-    const res = await fetch(`${API_BASE}/songs?${query}`);
-    return res.json();
-  },
+  authStatus: () => request('/auth/status'),
+  login: (password) => request('/login', send('POST', { password })),
+  logout: () => request('/logout', { method: 'POST' }),
 
-  async getSong(id) {
-    const res = await fetch(`${API_BASE}/songs/${id}`);
-    return res.json();
-  },
+  getSongs: (params = {}) => request('/songs?' + new URLSearchParams(params)),
+  getSong: (id) => request(`/songs/${id}`),
+  getStreamUrl: (id) => `${BASE}/songs/${id}/stream`,
+  updateSong: (id, data) => request(`/songs/${id}`, send('PATCH', data)),
+  deleteSong: (id) => request(`/songs/${id}`, { method: 'DELETE' }),
+  toggleFavorite: (id) => request(`/songs/${id}/favorite`, { method: 'POST' }),
+  getRecentlyPlayed: () => request('/songs/history/recent'),
+  recordHistory: (id) => request(`/songs/${id}/history`, { method: 'POST' }).catch(() => {}),
 
-  getStreamUrl(id) {
-    return `${API_BASE}/songs/${id}/stream`;
-  },
+  getArtists: () => request('/artists'),
+  getArtist: (id) => request(`/artists/${id}`),
+  getAlbums: () => request('/albums'),
+  getAlbum: (id) => request(`/albums/${id}`),
 
-  async updateSong(id, data) {
-    const res = await fetch(`${API_BASE}/songs/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    return res.json();
-  },
+  getPlaylists: () => request('/playlists'),
+  getPlaylist: (id) => request(`/playlists/${id}`),
+  createPlaylist: (name, description = '') => request('/playlists', send('POST', { name, description })),
+  deletePlaylist: (id) => request(`/playlists/${id}`, { method: 'DELETE' }),
+  addSongToPlaylist: (pid, sid) => request(`/playlists/${pid}/songs`, send('POST', { song_id: sid })),
+  removeSongFromPlaylist: (pid, sid) => request(`/playlists/${pid}/songs/${sid}`, { method: 'DELETE' }),
 
-  async deleteSong(id) {
-    const res = await fetch(`${API_BASE}/songs/${id}`, { method: 'DELETE' });
-    return res.json();
-  },
-
-  async toggleFavorite(id) {
-    const res = await fetch(`${API_BASE}/songs/${id}/favorite`, { method: 'POST' });
-    return res.json();
-  },
-
-  async getRecentlyPlayed() {
-    const res = await fetch(`${API_BASE}/songs/history/recent`);
-    return res.json();
-  },
-
-  async recordHistory(id) {
-    try {
-      await fetch(`${API_BASE}/songs/${id}/history`, { method: 'POST' });
-    } catch (e) {
-      // Non-critical
-    }
-  },
-
-  async getArtists() {
-    const res = await fetch(`${API_BASE}/artists`);
-    return res.json();
-  },
-
-  async getArtist(id) {
-    const res = await fetch(`${API_BASE}/artists/${id}`);
-    return res.json();
-  },
-
-  async getAlbums() {
-    const res = await fetch(`${API_BASE}/albums`);
-    return res.json();
-  },
-
-  async getAlbum(id) {
-    const res = await fetch(`${API_BASE}/albums/${id}`);
-    return res.json();
-  },
-
-  async getPlaylists() {
-    const res = await fetch(`${API_BASE}/playlists`);
-    return res.json();
-  },
-
-  async createPlaylist(name, description = '') {
-    const res = await fetch(`${API_BASE}/playlists`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description })
-    });
-    return res.json();
-  },
-
-  async getPlaylist(id) {
-    const res = await fetch(`${API_BASE}/playlists/${id}`);
-    return res.json();
-  },
-
-  async deletePlaylist(id) {
-    const res = await fetch(`${API_BASE}/playlists/${id}`, { method: 'DELETE' });
-    return res.json();
-  },
-
-  async addSongToPlaylist(playlistId, songId) {
-    const res = await fetch(`${API_BASE}/playlists/${playlistId}/songs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ song_id: songId })
-    });
-    return res.json();
-  },
-
-  async removeSongFromPlaylist(playlistId, songId) {
-    const res = await fetch(`${API_BASE}/playlists/${playlistId}/songs/${songId}`, {
-      method: 'DELETE'
-    });
-    return res.json();
-  },
-
-  async search(q) {
-    const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(q)}`);
-    return res.json();
-  },
-
-  async getStats() {
-    const res = await fetch(`${API_BASE}/stats`);
-    return res.json();
-  },
-
-  async uploadSong(formData) {
-    const res = await fetch(`${API_BASE}/upload`, {
-      method: 'POST',
-      body: formData
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Upload failed');
-    }
-    return res.json();
-  },
-
-  async triggerScan(directoryPath = null, copyToStorage = false) {
-    const res = await fetch(`${API_BASE}/scan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ directory_path: directoryPath, copy_to_storage: copyToStorage })
-    });
-    return res.json();
-  }
+  search: (q) => request('/search?q=' + encodeURIComponent(q)),
+  getStats: () => request('/stats'),
+  uploadSong: (formData) => request('/upload', { method: 'POST', body: formData }),
+  triggerScan: (directoryPath = null, copyToStorage = false) =>
+    request('/scan', send('POST', { directory_path: directoryPath, copy_to_storage: copyToStorage })),
 };

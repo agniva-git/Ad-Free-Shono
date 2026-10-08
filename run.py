@@ -1,38 +1,49 @@
 #!/usr/bin/env python3
 import socket
+
 import uvicorn
-from backend.app.config import settings
+
+from backend.app.config import BASE_DIR, settings
+
 
 def get_local_ip():
     """Finds the LAN IP address of this machine for phone access."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Does not actually connect, just resolves outbound route
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
+        s.connect(("8.8.8.8", 80))  # does not send anything, just picks the outbound route
+        return s.getsockname()[0]
     except Exception:
-        ip = "127.0.0.1"
+        return "127.0.0.1"
     finally:
         s.close()
-    return ip
+
 
 def main():
-    local_ip = get_local_ip()
     port = settings.PORT
+    lan = settings.HOST not in ("127.0.0.1", "localhost")
 
     print("\n" + "=" * 60)
-    print("🎵  ADFREESHONO — ZERO-COST STREAMING SERVER")
+    print("ADFREESHONO - PERSONAL MUSIC SERVER")
     print("=" * 60)
-    print(f"  💻 On this PC:          http://localhost:{port}")
-    print(f"  📱 On your Phone/Wi-Fi: http://{local_ip}:{port}")
+    print(f"  On this PC:   http://localhost:{port}")
+    if lan:
+        print(f"  On your LAN:  http://{get_local_ip()}:{port}")
     print("=" * 60)
-    print("  ⭐ Tips:")
-    print("     • Install as PWA: Open on your phone's browser and tap 'Add to Home Screen'")
-    print("     • Ingest music:   Use 'Upload & Scan' in the UI or run scripts/scan_library.py")
-    print("     • Stop server:    Press Ctrl + C")
-    print("=" * 60 + "\n")
+    if lan and not settings.ACCESS_PASSWORD:
+        print("  WARNING: ACCESS_PASSWORD is empty and the server is reachable from your")
+        print("  network. Anyone on your Wi-Fi can use and change your library.")
+        print("  Set ACCESS_PASSWORD in .env, or set HOST=127.0.0.1.")
+        print("=" * 60)
+    print("  Stop server: Ctrl + C\n")
 
-    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=port, reload=settings.DEBUG)
+    uvicorn.run(
+        "backend.app.main:app",
+        host=settings.HOST,
+        port=port,
+        reload=settings.DEBUG,
+        reload_dirs=[str(BASE_DIR / "backend"), str(BASE_DIR / "frontend")] if settings.DEBUG else None,
+    )
+
 
 if __name__ == "__main__":
     main()

@@ -1,974 +1,582 @@
-import { API } from './api.js';
+import { API, AuthError } from './api.js';
 import { player } from './player.js';
 
-// Application State
-const state = {
-  currentView: 'home',
-  viewParams: null,
-  cachedSongs: [],
-  cachedPlaylists: [],
-  isSeeking: false
-};
+const $ = (sel) => document.querySelector(sel);
+const view = $('#view');
+const modal = $('#modal');
 
-// Utilities
-function formatTime(seconds) {
-  if (!seconds || isNaN(seconds)) return '0:00';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s < 10 ? '0' : ''}${s}`;
+// lists: song arrays currently on screen, so a row click can play "this list from here"
+const state = { nav: 0, route: 'home', lists: {}, seeking: false };
+
+/* ---------- helpers ---------- */
+
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function fmt(sec) {
+  if (!sec || Number.isNaN(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function fmtLong(sec) {
+  const t = Math.round(sec || 0);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  return `${h}:${String(m).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
 }
 
-// Router & View Loader
-export async function navigateTo(view, params = null) {
-  state.currentView = view;
-  state.viewParams = params;
-
-  // Update nav links
-  document.querySelectorAll('.nav-link, .mobile-nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.view === view);
-  });
-
-  const contentArea = document.getElementById('content-area');
-  contentArea.innerHTML = '<div style="padding: 40px; text-align: center; color: #888;">Loading...</div>';
-
-  switch (view) {
-    case 'home':
-      await renderHomeView(contentArea);
-      break;
-    case 'songs':
-      await renderSongsView(contentArea);
-      break;
-    case 'artists':
-      await renderArtistsView(contentArea);
-      break;
-    case 'artist-detail':
-      await renderArtistDetailView(contentArea, params);
-      break;
-    case 'albums':
-      await renderAlbumsView(contentArea);
-      break;
-    case 'album-detail':
-      await renderAlbumDetailView(contentArea, params);
-      break;
-    case 'playlists':
-      await renderPlaylistsView(contentArea);
-      break;
-    case 'playlist-detail':
-      await renderPlaylistDetailView(contentArea, params);
-      break;
-    case 'favorites':
-      await renderFavoritesView(contentArea);
-      break;
-    case 'upload':
-      renderUploadView(contentArea);
-      break;
-    case 'search':
-      await renderSearchView(contentArea, params);
-      break;
-    default:
-      await renderHomeView(contentArea);
-  }
+let statusTimer;
+function setStatus(msg, isError = false) {
+  const el = $('#status');
+  el.textContent = msg;
+  el.className = isError ? 'error' : '';
+  clearTimeout(statusTimer);
+  if (msg) statusTimer = setTimeout(() => { el.textContent = ''; }, 4000);
 }
 
-// --- VIEWS ---
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const head = (title, actions = '') =>
+  `<div class="head"><h1>${esc(title)}</h1><div class="actions">${actions}</div></div>`;
+const playAll = (list, label = 'Play all') =>
+  `<button data-action="play-all" data-list="${list}">${label}</button>`;
+const empty = (msg) => `<p class="dim">${msg}</p>`;
 
-async function renderHomeView(container) {
-  const [stats, songs, favorites, recentlyPlayed] = await Promise.all([
+function card(href, imgUrl, placeholder, name, meta) {
+  const cover = imgUrl
+    ? `<img class="cover" src="${esc(imgUrl)}" alt="" loading="lazy">`
+    : `<div class="cover">${placeholder}</div>`;
+  return `<a class="card" href="${href}">${cover}<div class="name">${esc(name)}</div><div class="meta">${esc(meta)}</div></a>`;
+}
+
+function songTable(songs, list, { artist = true, album = true, playlistId = null } = {}) {
+  state.lists[list] = songs;
+  const playingId = player.currentTrack?.id;
+
+  const rows = songs.map((s, i) => {
+    const play = `data-action="play" data-list="${list}" data-i="${i}"`;
+    const id = esc(s.id);
+    const fav = `<button data-action="fav" data-id="${id}" title="Like / unlike" aria-label="Like or unlike">${s.is_favorite ? '[*]' : '[ ]'}</button>`;
+    const tools = playlistId
+      ? `<button data-action="pl-remove" data-pl="${esc(playlistId)}" data-id="${id}" title="Remove from playlist" aria-label="Remove from playlist">[-]</button>`
+      : `<button data-action="pl-add" data-id="${id}" title="Add to playlist" aria-label="Add to playlist">[+]</button>
+         <button data-action="edit" data-id="${id}" title="Edit details" aria-label="Edit details">[e]</button>
+         <button data-action="delete" data-id="${id}" title="Delete" aria-label="Delete">[x]</button>`;
+    return `<tr data-id="${id}"${s.id === playingId ? ' class="playing"' : ''}>
+      <td class="n" ${play}>${i + 1}</td>
+      <td class="t" ${play}>${esc(s.title)}<span class="sub">${esc(s.artist_name)}</span></td>
+      ${artist ? `<td class="c-artist" ${play}>${esc(s.artist_name)}</td>` : ''}
+      ${album ? `<td class="c-album" ${play}>${esc(s.album_title)}</td>` : ''}
+      <td class="time" ${play}>${fmt(s.duration_seconds)}</td>
+      <td class="acts">${fav} ${tools}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table class="songs">
+    <thead><tr>
+      <th class="n">#</th><th>Title</th>
+      ${artist ? '<th class="c-artist">Artist</th>' : ''}
+      ${album ? '<th class="c-album">Album</th>' : ''}
+      <th class="time">Time</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+/* ---------- views: each returns { html, after? } ---------- */
+
+async function viewHome() {
+  const [stats, added, liked, recent] = await Promise.all([
     API.getStats(),
     API.getSongs({ sort_by: 'created_at', order: 'desc' }),
     API.getSongs({ favorites_only: true }),
-    API.getRecentlyPlayed()
+    API.getRecentlyPlayed(),
   ]);
 
-  state.cachedSongs = songs;
+  const readout = `<div class="readout">
+    <span>SONGS <b>${stats.total_songs}</b></span>
+    <span>ARTISTS <b>${stats.total_artists}</b></span>
+    <span>ALBUMS <b>${stats.total_albums}</b></span>
+    <span>PLAYLISTS <b>${stats.total_playlists}</b></span>
+    <span>LIKED <b>${liked.length}</b></span>
+    <span>TOTAL TIME <b>${fmtLong(stats.total_duration_seconds)}</b></span>
+  </div>`;
 
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Welcome to AdFreeShono</h2>
-        <p>Your self-hosted, zero-cost personal music library</p>
-      </div>
-    </div>
-
-    <!-- Quick Stats -->
-    <div style="display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap;">
-      <div style="background: var(--bg-card); padding: 16px 20px; border-radius: 8px; flex: 1; min-width: 140px; border: 1px solid var(--border);">
-        <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Total Songs</div>
-        <div style="font-size: 24px; font-weight: 700; color: var(--accent); margin-top: 4px;">${stats.total_songs}</div>
-      </div>
-      <div style="background: var(--bg-card); padding: 16px 20px; border-radius: 8px; flex: 1; min-width: 140px; border: 1px solid var(--border);">
-        <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Artists</div>
-        <div style="font-size: 24px; font-weight: 700; margin-top: 4px;">${stats.total_artists}</div>
-      </div>
-      <div style="background: var(--bg-card); padding: 16px 20px; border-radius: 8px; flex: 1; min-width: 140px; border: 1px solid var(--border);">
-        <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Albums</div>
-        <div style="font-size: 24px; font-weight: 700; margin-top: 4px;">${stats.total_albums}</div>
-      </div>
-      <div style="background: var(--bg-card); padding: 16px 20px; border-radius: 8px; flex: 1; min-width: 140px; border: 1px solid var(--border);">
-        <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Liked Songs</div>
-        <div style="font-size: 24px; font-weight: 700; color: #e91e63; margin-top: 4px;">${favorites.length}</div>
-      </div>
-    </div>
-
-    ${stats.total_songs === 0 ? `
-      <div style="text-align: center; padding: 60px 20px; background: var(--bg-card); border-radius: 12px; border: 1px dashed var(--border);">
-        <div style="font-size: 44px; margin-bottom: 12px;">🎵</div>
-        <h3>Your library is empty</h3>
-        <p style="color: var(--text-muted); margin: 8px 0 20px;">Upload audio files or point the scanner to a folder on your drive.</p>
-        <button class="btn" onclick="window.appNavigate('upload')">Go to Upload & Scanner</button>
-      </div>
-    ` : `
-      <!-- Recently Played Section -->
-      ${recentlyPlayed && recentlyPlayed.length > 0 ? `
-        <div style="margin-bottom: 32px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-            <h3 style="font-size: 18px; font-weight: 700;">🕒 Recently Played</h3>
-            <button class="btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="window.playSongList(${JSON.stringify(recentlyPlayed).replace(/"/g, '&quot;')})">▶ Play All</button>
-          </div>
-          <table class="songs-table">
-            <tbody id="recent-songs-body"></tbody>
-          </table>
-        </div>
-      ` : ''}
-
-      <!-- Recently Added Section -->
-      <div style="margin-bottom: 32px;">
-        <h3 style="margin-bottom: 14px; font-size: 18px; font-weight: 700;">✨ Recently Added</h3>
-        <table class="songs-table">
-          <thead>
-            <tr>
-              <th style="width: 36px;">#</th>
-              <th>Title</th>
-              <th>Artist</th>
-              <th>Album</th>
-              <th style="width: 70px; text-align: right;">Time</th>
-              <th style="width: 130px; text-align: right;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="home-songs-body"></tbody>
-        </table>
-      </div>
-    `}
-  `;
-
-  if (recentlyPlayed && recentlyPlayed.length > 0) {
-    renderSongsTableRows(document.getElementById('recent-songs-body'), recentlyPlayed.slice(0, 5), recentlyPlayed);
+  if (stats.total_songs === 0) {
+    return { html: head('Home') + readout +
+      `<div class="box"><p>The library is empty.</p>
+       <p class="dim">Upload audio files, or point the scanner at a folder on this computer.</p>
+       <a href="#/upload"><button>Go to upload</button></a></div>` };
   }
 
-  if (songs.length > 0) {
-    renderSongsTableRows(document.getElementById('home-songs-body'), songs.slice(0, 10), songs);
-  }
+  const recentTop = recent.slice(0, 10);
+  const addedTop = added.slice(0, 10);
+  return { html: head('Home') + readout +
+    (recentTop.length
+      ? `<h2>Recently played</h2>${songTable(recentTop, 'recent')}` : '') +
+    `<h2>Recently added</h2>${songTable(addedTop, 'added')}` };
 }
 
-async function renderSongsView(container) {
+async function viewSongs() {
   const songs = await API.getSongs({ sort_by: 'title' });
-  state.cachedSongs = songs;
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>All Songs (${songs.length})</h2>
-        <p>Complete track catalog</p>
-      </div>
-      <button class="btn" onclick="window.playAllCachedSongs()">▶ Play All</button>
-    </div>
-
-    ${songs.length === 0 ? `
-      <p style="color: var(--text-muted);">No songs found. <a href="#" onclick="window.appNavigate('upload'); return false;" style="color: var(--accent);">Upload music</a>.</p>
-    ` : `
-      <table class="songs-table">
-        <thead>
-          <tr>
-            <th style="width: 36px;">#</th>
-            <th>Title</th>
-            <th>Artist</th>
-            <th>Album</th>
-            <th style="width: 70px; text-align: right;">Time</th>
-            <th style="width: 130px; text-align: right;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="all-songs-body"></tbody>
-      </table>
-    `}
-  `;
-
-  if (songs.length > 0) {
-    renderSongsTableRows(document.getElementById('all-songs-body'), songs, songs);
-  }
+  return { html: head(`All songs (${songs.length})`, songs.length ? playAll('all') : '') +
+    (songs.length ? songTable(songs, 'all') : empty('No songs yet. <a href="#/upload">Upload some</a>.')) };
 }
 
-async function renderFavoritesView(container) {
+async function viewLiked() {
   const songs = await API.getSongs({ favorites_only: true });
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>💖 Liked Songs (${songs.length})</h2>
-        <p>Your favorite music</p>
-      </div>
-      ${songs.length > 0 ? `<button class="btn" onclick="window.playSongList(${JSON.stringify(songs).replace(/"/g, '&quot;')})">▶ Play All</button>` : ''}
-    </div>
-
-    ${songs.length === 0 ? `
-      <p style="color: var(--text-muted);">No favorites yet. Click the heart icon on any song to save it here.</p>
-    ` : `
-      <table class="songs-table">
-        <thead>
-          <tr>
-            <th style="width: 36px;">#</th>
-            <th>Title</th>
-            <th>Artist</th>
-            <th>Album</th>
-            <th style="width: 70px; text-align: right;">Time</th>
-            <th style="width: 130px; text-align: right;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="favorites-body"></tbody>
-      </table>
-    `}
-  `;
-
-  if (songs.length > 0) {
-    renderSongsTableRows(document.getElementById('favorites-body'), songs, songs);
-  }
+  return { html: head(`Liked songs (${songs.length})`, songs.length ? playAll('liked') : '') +
+    (songs.length ? songTable(songs, 'liked') : empty('Nothing liked yet. Use [ ] on any song.')) };
 }
 
-async function renderArtistsView(container) {
+async function viewArtists() {
   const artists = await API.getArtists();
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Artists (${artists.length})</h2>
-        <p>Grouped by performer</p>
-      </div>
-    </div>
-
-    <div class="card-grid">
-      ${artists.map(a => `
-        <div class="media-card" onclick="window.appNavigate('artist-detail', '${a.id}')">
-          ${a.artwork_path ?
-            `<img class="card-cover" src="${a.artwork_path}" alt="Cover" style="border-radius: 50%;" />` :
-            `<div class="card-cover" style="border-radius: 50%;">🎤</div>`}
-          <h3>${escapeHtml(a.name)}</h3>
-          <p>${a.song_count} track${a.song_count === 1 ? '' : 's'}</p>
-        </div>
-      `).join('')}
-    </div>
-  `;
+  return { html: head(`Artists (${artists.length})`) +
+    (artists.length
+      ? `<div class="grid">${artists.map((a) =>
+          card(`#/artist/${a.id}`, a.artwork_path, 'NO IMG', a.name, plural(a.song_count, 'track'))).join('')}</div>`
+      : empty('No artists yet.')) };
 }
 
-async function renderArtistDetailView(container, artistId) {
-  const data = await API.getArtist(artistId);
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <button class="btn-secondary" style="margin-bottom: 12px; padding: 6px 12px; font-size: 12px;" onclick="window.appNavigate('artists')">← Back to Artists</button>
-        <h2>${escapeHtml(data.artist.name)}</h2>
-        <p>${data.songs.length} tracks</p>
-      </div>
-      ${data.songs.length > 0 ? `<button class="btn" onclick="window.playSongList(${JSON.stringify(data.songs).replace(/"/g, '&quot;')})">▶ Play All</button>` : ''}
-    </div>
-
-    <table class="songs-table">
-      <thead>
-        <tr>
-          <th style="width: 36px;">#</th>
-          <th>Title</th>
-          <th>Album</th>
-          <th style="width: 70px; text-align: right;">Time</th>
-          <th style="width: 130px; text-align: right;">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="artist-songs-body"></tbody>
-    </table>
-  `;
-
-  renderSongsTableRows(document.getElementById('artist-songs-body'), data.songs, data.songs);
+async function viewArtist(id) {
+  const d = await API.getArtist(id);
+  return { html:
+    `<p><a href="#/artists">&lt; Artists</a></p>` +
+    head(d.artist.name, d.songs.length ? playAll('artist') : '') +
+    `<p class="dim">${plural(d.songs.length, 'track')}</p>` +
+    songTable(d.songs, 'artist', { artist: false }) };
 }
 
-async function renderAlbumsView(container) {
+async function viewAlbums() {
   const albums = await API.getAlbums();
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Albums (${albums.length})</h2>
-        <p>Full album collections</p>
-      </div>
-    </div>
-
-    <div class="card-grid">
-      ${albums.map(al => `
-        <div class="media-card" onclick="window.appNavigate('album-detail', '${al.id}')">
-          ${al.artwork_path ?
-            `<img class="card-cover" src="${al.artwork_path}" alt="Cover"/>` :
-            `<div class="card-cover">💿</div>`}
-          <h3>${escapeHtml(al.title)}</h3>
-          <p>${escapeHtml(al.artist_name || 'Unknown Artist')}</p>
-        </div>
-      `).join('')}
-    </div>
-  `;
+  return { html: head(`Albums (${albums.length})`) +
+    (albums.length
+      ? `<div class="grid">${albums.map((al) =>
+          card(`#/album/${al.id}`, al.artwork_path, 'NO ART', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>`
+      : empty('No albums yet.')) };
 }
 
-async function renderAlbumDetailView(container, albumId) {
-  const data = await API.getAlbum(albumId);
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <button class="btn-secondary" style="margin-bottom: 12px; padding: 6px 12px; font-size: 12px;" onclick="window.appNavigate('albums')">← Back to Albums</button>
-        <h2>${escapeHtml(data.album.title)}</h2>
-        <p>by ${escapeHtml(data.album.artist_name)} • ${data.songs.length} tracks</p>
-      </div>
-      ${data.songs.length > 0 ? `<button class="btn" onclick="window.playSongList(${JSON.stringify(data.songs).replace(/"/g, '&quot;')})">▶ Play Album</button>` : ''}
-    </div>
-
-    <table class="songs-table">
-      <thead>
-        <tr>
-          <th style="width: 36px;">#</th>
-          <th>Title</th>
-          <th style="width: 70px; text-align: right;">Time</th>
-          <th style="width: 130px; text-align: right;">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="album-songs-body"></tbody>
-    </table>
-  `;
-
-  renderSongsTableRows(document.getElementById('album-songs-body'), data.songs, data.songs);
+async function viewAlbum(id) {
+  const d = await API.getAlbum(id);
+  return { html:
+    `<p><a href="#/albums">&lt; Albums</a></p>` +
+    head(d.album.title, d.songs.length ? playAll('album', 'Play album') : '') +
+    `<p class="dim">by ${esc(d.album.artist_name)} / ${plural(d.songs.length, 'track')}</p>` +
+    songTable(d.songs, 'album', { album: false }) };
 }
 
-async function renderPlaylistsView(container) {
+async function viewPlaylists() {
   const playlists = await API.getPlaylists();
-  state.cachedPlaylists = playlists;
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Playlists (${playlists.length})</h2>
-        <p>Custom playlists and mixtapes</p>
-      </div>
-      <button class="btn" onclick="window.promptCreatePlaylist()">+ New Playlist</button>
-    </div>
-
-    <div class="card-grid">
-      ${playlists.map(p => `
-        <div class="media-card" onclick="window.appNavigate('playlist-detail', '${p.id}')">
-          <div class="card-cover">📋</div>
-          <h3>${escapeHtml(p.name)}</h3>
-          <p>${p.song_count} track${p.song_count === 1 ? '' : 's'}</p>
-        </div>
-      `).join('')}
-    </div>
-  `;
+  return { html: head(`Playlists (${playlists.length})`, '<button data-action="pl-new">New playlist</button>') +
+    (playlists.length
+      ? `<div class="grid">${playlists.map((p) =>
+          card(`#/playlist/${p.id}`, null, 'PLAYLIST', p.name, plural(p.song_count, 'track'))).join('')}</div>`
+      : empty('No playlists yet.')) };
 }
 
-async function renderPlaylistDetailView(container, playlistId) {
-  const playlist = await API.getPlaylist(playlistId);
+async function viewPlaylist(id) {
+  const p = await API.getPlaylist(id);
+  const actions = (p.songs.length ? playAll('playlist') : '') +
+    `<button data-action="pl-delete" data-pl="${esc(p.id)}">Delete playlist</button>`;
+  return { html:
+    `<p><a href="#/playlists">&lt; Playlists</a></p>` +
+    head(p.name, actions) +
+    `<p class="dim">${esc(p.description || '')} ${plural(p.song_count, 'track')}</p>` +
+    (p.songs.length
+      ? songTable(p.songs, 'playlist', { playlistId: p.id })
+      : empty('This playlist is empty. Use [+] on any song to add it.')) };
+}
 
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <button class="btn-secondary" style="margin-bottom: 12px; padding: 6px 12px; font-size: 12px;" onclick="window.appNavigate('playlists')">← Back to Playlists</button>
-        <h2>${escapeHtml(playlist.name)}</h2>
-        <p>${escapeHtml(playlist.description || '')} • ${playlist.song_count} tracks</p>
-      </div>
-      <div style="display: flex; gap: 8px;">
-        ${playlist.songs.length > 0 ? `<button class="btn" onclick="window.playSongList(${JSON.stringify(playlist.songs).replace(/"/g, '&quot;')})">▶ Play All</button>` : ''}
-        <button class="btn-secondary" onclick="window.confirmDeletePlaylist('${playlist.id}')">Delete Playlist</button>
-      </div>
-    </div>
+async function viewSearch(q) {
+  if (!q) return { html: head('Search') + empty('Type in the search box above.') };
+  const r = await API.search(q);
+  const none = !r.songs.length && !r.artists.length && !r.albums.length;
+  return { html:
+    head(`Search: ${q}`) +
+    `<p class="dim">${plural(r.songs.length, 'song')}, ${plural(r.artists.length, 'artist')}, ${plural(r.albums.length, 'album')}</p>` +
+    (r.songs.length ? `<h2>Songs</h2>${songTable(r.songs, 'search')}` : '') +
+    (r.artists.length
+      ? `<h2>Artists</h2><div class="grid">${r.artists.map((a) =>
+          card(`#/artist/${a.id}`, a.artwork_path, 'NO IMG', a.name, plural(a.song_count, 'track'))).join('')}</div>` : '') +
+    (r.albums.length
+      ? `<h2>Albums</h2><div class="grid">${r.albums.map((al) =>
+          card(`#/album/${al.id}`, al.artwork_path, 'NO ART', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>` : '') +
+    (none ? empty('Nothing found.') : '') };
+}
 
-    ${playlist.songs.length === 0 ? `
-      <p style="color: var(--text-muted);">This playlist is empty. Add songs from your library using the <strong>+</strong> button on any track row.</p>
-    ` : `
-      <table class="songs-table">
-        <thead>
-          <tr>
-            <th style="width: 36px;">#</th>
-            <th>Title</th>
-            <th>Artist</th>
-            <th>Album</th>
-            <th style="width: 70px; text-align: right;">Time</th>
-            <th style="width: 100px; text-align: right;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="playlist-songs-body"></tbody>
-      </table>
-    `}
-  `;
+function viewUpload() {
+  const html = head('Upload and scan') +
+    `<div class="drop" id="drop">Drop audio files here, or click to browse
+       <div class="dim">MP3 FLAC M4A AAC OGG OPUS WAV</div>
+       <input type="file" id="file-input" accept="audio/*" multiple hidden>
+     </div>
+     <div id="upload-out" class="box" hidden></div>
 
-  if (playlist.songs.length > 0) {
-    const tbody = document.getElementById('playlist-songs-body');
-    tbody.innerHTML = playlist.songs.map((song, idx) => `
-      <tr data-song-id="${song.id}">
-        <td style="color: var(--text-muted); font-size: 12px;" onclick="window.playSongFromList('${song.id}')">${idx + 1}</td>
-        <td onclick="window.playSongFromList('${song.id}')">
-          <div class="song-title-cell">
-            ${song.artwork_url ?
-              `<img src="${song.artwork_url}" class="song-thumb" alt="cover"/>` :
-              `<div class="song-thumb">🎵</div>`}
-            <div class="song-meta">
-              <h4>${escapeHtml(song.title)}</h4>
-              <span>${escapeHtml(song.artist_name || 'Unknown')}</span>
-            </div>
-          </div>
-        </td>
-        <td onclick="window.playSongFromList('${song.id}')" style="color: var(--text-muted);">${escapeHtml(song.artist_name || 'Unknown')}</td>
-        <td onclick="window.playSongFromList('${song.id}')" style="color: var(--text-muted);">${escapeHtml(song.album_title || 'Unknown')}</td>
-        <td onclick="window.playSongFromList('${song.id}')" style="text-align: right; color: var(--text-muted);">${formatTime(song.duration_seconds)}</td>
-        <td style="text-align: right;">
-          <div class="row-actions">
-            <button class="action-icon-btn heart ${song.is_favorite ? 'active' : ''}" title="Favorite" onclick="event.stopPropagation(); window.toggleSongFavorite('${song.id}', this)">
-              ${song.is_favorite ? '❤️' : '🤍'}
-            </button>
-            <button class="action-icon-btn delete" title="Remove from playlist" onclick="event.stopPropagation(); window.removeSongFromPlaylist('${playlist.id}', '${song.id}')">
-              ✕
-            </button>
-          </div>
-        </td>
-      </tr>
-    `).join('');
+     <div class="box">
+       <h2>Override tags (one file only)</h2>
+       <p class="dim">Used only when you upload a single file with missing or wrong tags.</p>
+       <label class="field"><span>Title</span><input id="m-title"></label>
+       <label class="field"><span>Artist</span><input id="m-artist"></label>
+       <label class="field"><span>Album</span><input id="m-album"></label>
+       <label class="field"><span>Genre</span><input id="m-genre"></label>
+     </div>
+
+     <div class="box">
+       <h2>Scan a folder on this computer</h2>
+       <p class="dim">Songs are indexed where they are. Nothing is copied, and deleting a song here never deletes your file.</p>
+       <div class="row">
+         <input id="scan-path" placeholder="D:\\Music   (empty = the app's own audio folder)">
+         <button id="scan-btn" data-action="scan">Scan folder</button>
+       </div>
+       <p id="scan-out" style="margin-top:10px"></p>
+     </div>`;
+
+  const after = () => {
+    const drop = $('#drop');
+    const input = $('#file-input');
+    drop.addEventListener('click', (e) => { if (e.target !== input) input.click(); });
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+      if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
+    });
+    input.addEventListener('change', () => { if (input.files.length) uploadFiles([...input.files]); });
+  };
+  return { html, after };
+}
+
+/* ---------- router ---------- */
+
+const routes = {
+  home: viewHome, songs: viewSongs, liked: viewLiked,
+  artists: viewArtists, artist: viewArtist,
+  albums: viewAlbums, album: viewAlbum,
+  playlists: viewPlaylists, playlist: viewPlaylist,
+  search: viewSearch, upload: viewUpload,
+};
+const NAV_OF = { artist: 'artists', album: 'albums', playlist: 'playlists' };
+
+async function route(quiet = false) {
+  const token = ++state.nav;
+  const [name, ...rest] = location.hash.replace(/^#\/?/, '').split('/');
+  const arg = rest.length ? decodeURIComponent(rest.join('/')) : null;
+  const key = routes[name] ? name : 'home';
+  state.route = key;
+
+  document.querySelectorAll('#nav a').forEach((a) =>
+    a.classList.toggle('active', a.dataset.route === (NAV_OF[key] || key)));
+  const search = $('#search');
+  if (key === 'search') { if (search.value.trim() !== arg) search.value = arg || ''; }
+  else if (search.value) search.value = '';
+
+  if (!quiet) view.innerHTML = '<p class="dim">Loading...</p>';
+  try {
+    const out = await routes[key](arg);
+    if (token !== state.nav) return; // a newer navigation started; drop this result
+    view.innerHTML = out.html;
+    if (out.after) out.after();
+  } catch (err) {
+    if (token !== state.nav) return;
+    if (err instanceof AuthError) return showLogin();
+    view.innerHTML = `<p class="error">Error: ${esc(err.message)}</p>`;
   }
 }
 
-async function renderSearchView(container, query) {
-  if (!query) {
-    container.innerHTML = `<h2>Search</h2><p style="color: var(--text-muted);">Type in the search bar above to find songs, artists, and albums.</p>`;
-    return;
-  }
+/* ---------- login ---------- */
 
-  const results = await API.search(query);
-
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Search results for "${escapeHtml(query)}"</h2>
-        <p>Found ${results.songs.length} songs, ${results.artists.length} artists, ${results.albums.length} albums</p>
-      </div>
-    </div>
-
-    <!-- Songs Results -->
-    ${results.songs.length > 0 ? `
-      <h3 style="margin: 24px 0 12px; font-size: 18px;">Songs</h3>
-      <table class="songs-table">
-        <tbody id="search-songs-body"></tbody>
-      </table>
-    ` : ''}
-
-    <!-- Artists Results -->
-    ${results.artists.length > 0 ? `
-      <h3 style="margin: 32px 0 16px; font-size: 18px;">Artists</h3>
-      <div class="card-grid">
-        ${results.artists.map(a => `
-          <div class="media-card" onclick="window.appNavigate('artist-detail', '${a.id}')">
-            ${a.artwork_path ?
-              `<img class="card-cover" src="${a.artwork_path}" alt="Cover" style="border-radius: 50%;" />` :
-              `<div class="card-cover" style="border-radius: 50%;">🎤</div>`}
-            <h3>${escapeHtml(a.name)}</h3>
-            <p>${a.song_count} track${a.song_count === 1 ? '' : 's'}</p>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-
-    <!-- Albums Results (Fixed Problem 10) -->
-    ${results.albums.length > 0 ? `
-      <h3 style="margin: 32px 0 16px; font-size: 18px;">Albums</h3>
-      <div class="card-grid">
-        ${results.albums.map(al => `
-          <div class="media-card" onclick="window.appNavigate('album-detail', '${al.id}')">
-            ${al.artwork_path ?
-              `<img class="card-cover" src="${al.artwork_path}" alt="Cover"/>` :
-              `<div class="card-cover">💿</div>`}
-            <h3>${escapeHtml(al.title)}</h3>
-            <p>${escapeHtml(al.artist_name || 'Unknown Artist')}</p>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-
-    ${results.songs.length === 0 && results.artists.length === 0 && results.albums.length === 0 ? `
-      <p style="color: var(--text-muted); margin-top: 20px;">No results found matching "${escapeHtml(query)}".</p>
-    ` : ''}
-  `;
-
-  if (results.songs.length > 0) {
-    renderSongsTableRows(document.getElementById('search-songs-body'), results.songs, results.songs);
-  }
+async function refreshAuth() {
+  const s = await API.authStatus();
+  $('#logout').hidden = !(s.auth_required && s.authenticated);
+  return s;
 }
 
-function renderUploadView(container) {
-  container.innerHTML = `
-    <div class="view-header">
-      <div>
-        <h2>Upload & Library Ingestion</h2>
-        <p>Add tracks with automatic or manual ID3 metadata, or scan entire folders</p>
-      </div>
-    </div>
-
-    <!-- Drag and Drop Upload -->
-    <div class="upload-dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
-      <div class="upload-icon">☁️</div>
-      <h3>Drag & drop audio files here, or click to browse</h3>
-      <p style="color: var(--text-muted); margin-top: 8px;">Supports MP3, FLAC, M4A, AAC, OGG, WAV</p>
-      <input type="file" id="file-input" multiple accept="audio/*" style="display: none;" />
-      <div id="upload-status" style="margin-top: 16px; font-weight: 600; color: var(--accent);"></div>
-    </div>
-
-    <!-- Manual Metadata Form (Fix for Problem 9) -->
-    <div class="form-box">
-      <h3 style="font-size: 16px;">✏️ Manual Metadata Overrides (Optional)</h3>
-      <p style="color: var(--text-muted); font-size: 13px; margin-top: 4px;">
-        If uploading a single track with missing or incorrect ID3 tags, fill this in to override:
-      </p>
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Title</label>
-          <input type="text" id="manual-title" placeholder="Song Title (optional)" />
-        </div>
-        <div class="form-group">
-          <label>Artist</label>
-          <input type="text" id="manual-artist" placeholder="Artist Name (optional)" />
-        </div>
-        <div class="form-group">
-          <label>Album</label>
-          <input type="text" id="manual-album" placeholder="Album Title (optional)" />
-        </div>
-        <div class="form-group">
-          <label>Genre</label>
-          <input type="text" id="manual-genre" placeholder="e.g. Rock, Pop, Indie" />
-        </div>
-      </div>
-    </div>
-
-    <!-- Scanner Box -->
-    <div class="form-box">
-      <h3 style="font-size: 16px;">📂 Scan Existing Music Folder on PC</h3>
-      <p style="color: var(--text-muted); font-size: 13px; margin-top: 4px; margin-bottom: 16px;">
-        Point to an existing directory on your computer to automatically catalog all audio files without moving or copying them:
-      </p>
-      <div style="display: flex; gap: 12px; max-width: 640px;">
-        <input type="text" id="scan-path-input" placeholder="e.g. D:\\MyMusic or leave empty for configured media/" style="flex: 1; padding: 10px 14px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 8px; color: #fff; font-size: 13px;" />
-        <button class="btn" id="scan-btn" onclick="window.handleDirectoryScan()">Scan Folder</button>
-      </div>
-      <div id="scan-result" style="margin-top: 14px; font-size: 13px;"></div>
-    </div>
-  `;
-
-  // Attach drag-drop events
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-
-  dropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropzone.classList.add('dragover');
-  });
-
-  dropzone.addEventListener('dragleave', () => {
-    dropzone.classList.remove('dragover');
-  });
-
-  dropzone.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) {
-      await handleFilesUpload(e.dataTransfer.files);
-    }
-  });
-
-  fileInput.addEventListener('change', async () => {
-    if (fileInput.files.length > 0) {
-      await handleFilesUpload(fileInput.files);
-    }
-  });
+function showLogin() {
+  state.nav++; // cancel any pending render
+  $('#logout').hidden = true;
+  view.innerHTML = `<div class="login">
+    <h1>Login</h1>
+    <label class="field"><span>Password</span><input type="password" id="pw" autocomplete="current-password"></label>
+    <button data-action="login">Enter</button>
+    <p id="login-msg" class="error" style="margin-top:10px"></p>
+  </div>`;
+  $('#pw').focus();
 }
 
-// Render Song Table Rows with Full Action Bar
-function renderSongsTableRows(tbody, songsToRender, parentList) {
-  tbody.innerHTML = songsToRender.map((song, idx) => {
-    const isPlayingThis = player.currentTrack?.id === song.id;
-    return `
-      <tr class="${isPlayingThis ? 'playing' : ''}" data-song-id="${song.id}">
-        <td style="color: var(--text-muted); font-size: 12px;" onclick="window.playSongFromList('${song.id}')">${idx + 1}</td>
-        <td onclick="window.playSongFromList('${song.id}')">
-          <div class="song-title-cell">
-            ${song.artwork_url ?
-              `<img src="${song.artwork_url}" class="song-thumb" alt="cover"/>` :
-              `<div class="song-thumb">🎵</div>`}
-            <div class="song-meta">
-              <h4>${escapeHtml(song.title)}</h4>
-              <span>${escapeHtml(song.artist_name || 'Unknown')}</span>
-            </div>
-          </div>
-        </td>
-        <td onclick="window.playSongFromList('${song.id}')" style="color: var(--text-muted);">${escapeHtml(song.artist_name || 'Unknown')}</td>
-        <td onclick="window.playSongFromList('${song.id}')" style="color: var(--text-muted);">${escapeHtml(song.album_title || 'Unknown')}</td>
-        <td onclick="window.playSongFromList('${song.id}')" style="text-align: right; color: var(--text-muted);">${formatTime(song.duration_seconds)}</td>
-        <td style="text-align: right;">
-          <div class="row-actions">
-            <button class="action-icon-btn heart ${song.is_favorite ? 'active' : ''}" title="Favorite" onclick="event.stopPropagation(); window.toggleSongFavorite('${song.id}', this)">
-              ${song.is_favorite ? '❤️' : '🤍'}
-            </button>
-            <button class="action-icon-btn" title="Add to Playlist" onclick="event.stopPropagation(); window.openAddToPlaylistModal('${song.id}')">
-              ➕
-            </button>
-            <button class="action-icon-btn" title="Edit Metadata" onclick="event.stopPropagation(); window.openEditMetadataModal('${song.id}')">
-              ✏️
-            </button>
-            <button class="action-icon-btn delete" title="Delete Song" onclick="event.stopPropagation(); window.confirmDeleteSong('${song.id}')">
-              🗑️
-            </button>
-          </div>
-        </td>
-      </tr>
-    `;
-  }).join('');
+/* ---------- modals ---------- */
+
+function openModal(html) {
+  modal.innerHTML = html;
+  if (!modal.open) modal.showModal();
+}
+function closeModal() {
+  if (modal.open) modal.close();
 }
 
-async function handleFilesUpload(files) {
-  const statusEl = document.getElementById('upload-status');
-  statusEl.innerText = `Uploading ${files.length} file(s)...`;
+/* ---------- uploads and scans ---------- */
 
-  const manualTitle = document.getElementById('manual-title')?.value.trim();
-  const manualArtist = document.getElementById('manual-artist')?.value.trim();
-  const manualAlbum = document.getElementById('manual-album')?.value.trim();
-  const manualGenre = document.getElementById('manual-genre')?.value.trim();
+async function uploadFiles(files) {
+  const out = $('#upload-out');
+  out.hidden = false;
+  const val = (id) => $(id).value.trim();
+  const meta = { title: val('#m-title'), artist: val('#m-artist'), album: val('#m-album'), genre: val('#m-genre') };
+  let added = 0;
+  const failed = [];
 
-  let successCount = 0;
   for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    statusEl.innerText = `Uploading (${i + 1}/${files.length}): ${file.name}...`;
+    out.textContent = `Uploading ${i + 1}/${files.length}: ${files[i].name}`;
     const fd = new FormData();
-    fd.append('file', file);
-
-    // Apply manual metadata if single file or user filled it in
-    if (files.length === 1) {
-      if (manualTitle) fd.append('title', manualTitle);
-      if (manualArtist) fd.append('artist', manualArtist);
-      if (manualAlbum) fd.append('album', manualAlbum);
-      if (manualGenre) fd.append('genre', manualGenre);
-    }
-
+    fd.append('file', files[i]);
+    if (files.length === 1) Object.entries(meta).forEach(([k, v]) => { if (v) fd.append(k, v); });
     try {
       await API.uploadSong(fd);
-      successCount++;
-    } catch (e) {
-      console.error('Upload error', e);
+      added++;
+    } catch (err) {
+      if (err instanceof AuthError) return showLogin();
+      failed.push(`${files[i].name}: ${err.message}`);
     }
   }
 
-  statusEl.innerText = `✅ Successfully added ${successCount} track(s)!`;
-  setTimeout(() => {
-    navigateTo('songs');
-  }, 1000);
+  out.innerHTML = `Added ${added} of ${files.length}. <a href="#/songs">View songs</a>` +
+    failed.map((f) => `<div class="error">${esc(f)}</div>`).join('');
 }
 
-// Window Globals for UI bindings
-window.appNavigate = navigateTo;
+/* ---------- click actions ---------- */
 
-window.playSongFromList = function(songId) {
-  const song = state.cachedSongs.find(s => s.id === songId);
-  if (song) {
-    player.playTrack(song, state.cachedSongs);
-  } else {
-    API.getSong(songId).then(s => player.playTrack(s));
-  }
-};
+const listSong = (el) => state.lists[el.dataset.list]?.[Number(el.dataset.i)];
 
-window.playAllCachedSongs = function() {
-  if (state.cachedSongs.length > 0) {
-    player.playTrack(state.cachedSongs[0], state.cachedSongs);
-  }
-};
+const actions = {
+  play(el) {
+    const list = state.lists[el.dataset.list];
+    const song = listSong(el);
+    if (song) player.playTrack(song, list);
+  },
 
-window.playSongList = function(list) {
-  if (list && list.length > 0) {
-    player.playTrack(list[0], list);
-  }
-};
+  'play-all'(el) {
+    const list = state.lists[el.dataset.list];
+    if (list?.length) player.playTrack(list[0], list);
+  },
 
-window.toggleSongFavorite = async function(songId, btnEl) {
-  const res = await API.toggleFavorite(songId);
-  if (res.is_favorite) {
-    btnEl.classList.add('active');
-    btnEl.innerText = '❤️';
-  } else {
-    btnEl.classList.remove('active');
-    btnEl.innerText = '🤍';
-  }
-};
+  async fav(el) {
+    const r = await API.toggleFavorite(el.dataset.id);
+    el.textContent = r.is_favorite ? '[*]' : '[ ]';
+    Object.values(state.lists).forEach((l) => l.forEach((s) => { if (s.id === el.dataset.id) s.is_favorite = r.is_favorite; }));
+    if (state.route === 'liked') route(true);
+  },
 
-// --- Problem 2: Metadata Edit Modal ---
-window.openEditMetadataModal = async function(songId) {
-  const song = await API.getSong(songId);
+  async 'pl-add'(el) {
+    const playlists = await API.getPlaylists();
+    const id = esc(el.dataset.id);
+    openModal(`<h2>Add to playlist</h2>
+      ${playlists.length
+        ? `<div class="pick-list">${playlists.map((p) =>
+            `<button data-action="pl-pick" data-pl="${esc(p.id)}" data-id="${id}" data-name="${esc(p.name)}">${esc(p.name)} (${p.song_count})</button>`).join('')}</div>`
+        : '<p class="dim">No playlists yet.</p>'}
+      <div class="row"><input id="pl-new-name" placeholder="new playlist name">
+        <button data-action="pl-create" data-id="${id}">Create and add</button></div>
+      <div class="row"><button data-action="close-modal">Cancel</button></div>`);
+  },
 
-  const modalHtml = `
-    <div class="modal-overlay" id="edit-modal">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>Edit Track Metadata</h3>
-          <button class="modal-close" onclick="document.getElementById('edit-modal').remove()">✕</button>
-        </div>
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label>Title</label>
-          <input type="text" id="edit-title" value="${escapeHtml(song.title)}" />
-        </div>
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label>Artist</label>
-          <input type="text" id="edit-artist" value="${escapeHtml(song.artist_name || '')}" />
-        </div>
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label>Album</label>
-          <input type="text" id="edit-album" value="${escapeHtml(song.album_title || '')}" />
-        </div>
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label>Genre</label>
-          <input type="text" id="edit-genre" value="${escapeHtml(song.genre || '')}" />
-        </div>
-        <div class="modal-actions">
-          <button class="btn-secondary" onclick="document.getElementById('edit-modal').remove()">Cancel</button>
-          <button class="btn" id="save-meta-btn">Save Changes</button>
-        </div>
-      </div>
-    </div>
-  `;
+  async 'pl-pick'(el) {
+    await API.addSongToPlaylist(el.dataset.pl, el.dataset.id);
+    closeModal();
+    setStatus(`Added to "${el.dataset.name}"`);
+  },
 
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  async 'pl-create'(el) {
+    const name = $('#pl-new-name').value.trim();
+    if (!name) return;
+    const pl = await API.createPlaylist(name);
+    await API.addSongToPlaylist(pl.id, el.dataset.id);
+    closeModal();
+    setStatus(`Created "${name}" and added the song`);
+  },
 
-  document.getElementById('save-meta-btn').addEventListener('click', async () => {
-    const updated = {
-      title: document.getElementById('edit-title').value.trim(),
-      artist_name: document.getElementById('edit-artist').value.trim(),
-      album_title: document.getElementById('edit-album').value.trim(),
-      genre: document.getElementById('edit-genre').value.trim()
-    };
-    await API.updateSong(songId, updated);
-    document.getElementById('edit-modal').remove();
+  async 'pl-new'() {
+    const name = (prompt('Playlist name:') || '').trim();
+    if (!name) return;
+    await API.createPlaylist(name);
+    route(true);
+  },
 
-    // If currently playing this song, update player bar immediately
-    if (player.currentTrack?.id === songId) {
-      player.currentTrack.title = updated.title;
-      player.currentTrack.artist_name = updated.artist_name;
-      player.currentTrack.album_title = updated.album_title;
+  async 'pl-delete'(el) {
+    if (!confirm('Delete this playlist? Your songs are not deleted.')) return;
+    await API.deletePlaylist(el.dataset.pl);
+    location.hash = '#/playlists';
+  },
+
+  async 'pl-remove'(el) {
+    await API.removeSongFromPlaylist(el.dataset.pl, el.dataset.id);
+    route(true);
+  },
+
+  async edit(el) {
+    const s = await API.getSong(el.dataset.id);
+    const field = (id, label, value) =>
+      `<label class="field"><span>${label}</span><input id="${id}" value="${esc(value)}"></label>`;
+    openModal(`<h2>Edit details</h2>
+      ${field('e-title', 'Title', s.title)}
+      ${field('e-artist', 'Artist', s.artist_name)}
+      ${field('e-album', 'Album', s.album_title)}
+      ${field('e-genre', 'Genre', s.genre)}
+      <div class="row">
+        <button data-action="edit-save" data-id="${esc(s.id)}">Save</button>
+        <button data-action="close-modal">Cancel</button>
+      </div>`);
+  },
+
+  async 'edit-save'(el) {
+    const v = (id) => $(id).value.trim();
+    const updated = await API.updateSong(el.dataset.id, {
+      title: v('#e-title'), artist_name: v('#e-artist'), album_title: v('#e-album'), genre: v('#e-genre'),
+    });
+    closeModal();
+    if (player.currentTrack?.id === updated.id) {
+      Object.assign(player.currentTrack, updated);
       player.notifyState();
     }
+    route(true);
+  },
 
-    // Refresh active view
-    navigateTo(state.currentView, state.viewParams);
-  });
+  async delete(el) {
+    const row = el.closest('tr');
+    const title = row?.querySelector('.t')?.firstChild?.textContent || 'this song';
+    if (!confirm(`Remove "${title}" from your library?\n\nFiles stored by this app are deleted. Files in your own folders (added by scanning) are never touched.`)) return;
+    const r = await API.deleteSong(el.dataset.id);
+    setStatus(r.file_deleted ? 'Song and its file deleted' : 'Removed from library; your original file was kept');
+    route(true);
+  },
+
+  async scan(el) {
+    const out = $('#scan-out');
+    el.disabled = true;
+    out.className = 'dim';
+    out.textContent = 'Scanning...';
+    try {
+      const r = await API.triggerScan($('#scan-path').value.trim() || null, false);
+      out.className = '';
+      out.textContent = `Scanned ${r.scanned}, added ${r.added}, already indexed ${r.skipped}.`;
+    } catch (err) {
+      if (err instanceof AuthError) throw err;
+      out.className = 'error';
+      out.textContent = err.message;
+    } finally {
+      el.disabled = false;
+    }
+  },
+
+  async login() {
+    const msg = $('#login-msg');
+    try {
+      await API.login($('#pw').value);
+      await refreshAuth();
+      route();
+    } catch (err) {
+      msg.textContent = err instanceof AuthError ? 'Wrong password.' : err.message;
+    }
+  },
+
+  async logout() {
+    await API.logout();
+    player.stop();
+    showLogin();
+  },
+
+  'close-modal': closeModal,
 };
 
-// --- Problem 3: Add to Playlist Modal ---
-window.openAddToPlaylistModal = async function(songId) {
-  const playlists = await API.getPlaylists();
-
-  const modalHtml = `
-    <div class="modal-overlay" id="playlist-modal">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>Add to Playlist</h3>
-          <button class="modal-close" onclick="document.getElementById('playlist-modal').remove()">✕</button>
-        </div>
-        ${playlists.length === 0 ? `
-          <p style="color: var(--text-muted); margin-bottom: 16px;">No playlists created yet.</p>
-        ` : `
-          <div style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; margin-bottom: 16px;">
-            ${playlists.map(p => `
-              <button class="btn-secondary" style="text-align: left; justify-content: space-between; display: flex; width: 100%; padding: 10px 14px;" onclick="window.confirmAddSongToPlaylist('${p.id}', '${songId}')">
-                <span>📋 ${escapeHtml(p.name)}</span>
-                <span style="font-size: 11px; color: var(--text-muted);">${p.song_count} tracks</span>
-              </button>
-            `).join('')}
-          </div>
-        `}
-        <div style="border-top: 1px solid var(--border); padding-top: 16px; display: flex; gap: 8px;">
-          <input type="text" id="new-playlist-quick-name" placeholder="Create new playlist..." style="flex:1; padding: 8px 12px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 6px; color:#fff;" />
-          <button class="btn" style="padding: 8px 16px; font-size: 12px;" onclick="window.createAndAddSongToPlaylist('${songId}')">+ Create & Add</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-};
-
-window.confirmAddSongToPlaylist = async function(playlistId, songId) {
-  await API.addSongToPlaylist(playlistId, songId);
-  document.getElementById('playlist-modal')?.remove();
-  alert('Added track to playlist!');
-};
-
-window.createAndAddSongToPlaylist = async function(songId) {
-  const input = document.getElementById('new-playlist-quick-name');
-  const name = input.value.trim();
-  if (!name) return;
-  const newPl = await API.createPlaylist(name);
-  await API.addSongToPlaylist(newPl.id, songId);
-  document.getElementById('playlist-modal')?.remove();
-  alert(`Created "${name}" and added track!`);
-};
-
-window.removeSongFromPlaylist = async function(playlistId, songId) {
-  if (confirm('Remove this track from the playlist?')) {
-    await API.removeSongFromPlaylist(playlistId, songId);
-    navigateTo('playlist-detail', playlistId);
-  }
-};
-
-// --- Problem 6: Delete Song ---
-window.confirmDeleteSong = async function(songId) {
-  if (confirm('Are you sure you want to delete this track? The file and metadata will be permanently removed.')) {
-    await API.deleteSong(songId);
-    navigateTo(state.currentView, state.viewParams);
-  }
-};
-
-window.promptCreatePlaylist = async function() {
-  const name = prompt('Enter playlist name:');
-  if (name && name.trim()) {
-    await API.createPlaylist(name.trim());
-    navigateTo('playlists');
-  }
-};
-
-window.confirmDeletePlaylist = async function(playlistId) {
-  if (confirm('Delete this entire playlist? (Music files will not be deleted)')) {
-    await API.deletePlaylist(playlistId);
-    navigateTo('playlists');
-  }
-};
-
-window.handleDirectoryScan = async function() {
-  const input = document.getElementById('scan-path-input');
-  const resultEl = document.getElementById('scan-result');
-  const btn = document.getElementById('scan-btn');
-
-  btn.disabled = true;
-  resultEl.style.color = '#888';
-  resultEl.innerText = 'Scanning folder and parsing audio metadata...';
-
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-action]');
+  if (!el || !actions[el.dataset.action]) return;
   try {
-    const path = input.value.trim() || null;
-    const res = await API.triggerScan(path, false);
-    if (res.error) {
-      resultEl.style.color = '#ff5252';
-      resultEl.innerText = `⚠️ ${res.error}`;
-    } else {
-      resultEl.style.color = 'var(--accent)';
-      resultEl.innerText = `✅ Scan complete! Scanned: ${res.scanned}, Newly Added: ${res.added}, Skipped (already indexed): ${res.skipped}`;
-    }
-  } catch (e) {
-    resultEl.style.color = '#ff5252';
-    resultEl.innerText = `Error scanning folder: ${e.message}`;
-  } finally {
-    btn.disabled = false;
+    await actions[el.dataset.action](el);
+  } catch (err) {
+    if (err instanceof AuthError) showLogin(); else setStatus(err.message, true);
   }
-};
+});
 
-// Player UI synchronization
-function setupPlayerUI() {
-  const playPauseBtn = document.getElementById('play-pause-btn');
-  const prevBtn = document.getElementById('prev-btn');
-  const nextBtn = document.getElementById('next-btn');
-  const shuffleBtn = document.getElementById('shuffle-btn');
-  const repeatBtn = document.getElementById('repeat-btn');
-  const progressSlider = document.getElementById('progress-slider');
-  const volumeSlider = document.getElementById('volume-slider');
-  const currentTimeEl = document.getElementById('current-time');
-  const totalTimeEl = document.getElementById('total-time');
-  const coverImg = document.getElementById('player-cover-img');
-  const titleEl = document.getElementById('player-title');
-  const artistEl = document.getElementById('player-artist');
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'pw') actions.login();
+});
 
-  playPauseBtn.addEventListener('click', () => player.togglePlayPause());
-  prevBtn.addEventListener('click', () => player.prev());
-  nextBtn.addEventListener('click', () => player.next());
-  shuffleBtn.addEventListener('click', () => player.toggleShuffle());
-  repeatBtn.addEventListener('click', () => player.toggleRepeat());
+/* ---------- player deck ---------- */
 
-  progressSlider.addEventListener('mousedown', () => { state.isSeeking = true; });
-  progressSlider.addEventListener('touchstart', () => { state.isSeeking = true; });
-  progressSlider.addEventListener('change', () => {
-    player.seek(parseFloat(progressSlider.value));
-    state.isSeeking = false;
-  });
-  progressSlider.addEventListener('input', () => {
-    currentTimeEl.innerText = formatTime(parseFloat(progressSlider.value));
+function setupDeck() {
+  const seek = $('#seek');
+  const vol = $('#vol');
+  const art = $('#art');
+  const REP = { all: 'REP:ALL', one: 'REP:ONE', off: 'REP:OFF' };
+
+  $('#b-play').addEventListener('click', () => player.togglePlayPause());
+  $('#b-prev').addEventListener('click', () => player.prev());
+  $('#b-next').addEventListener('click', () => player.next());
+  $('#b-shuf').addEventListener('click', () => player.toggleShuffle());
+  $('#b-rep').addEventListener('click', () => player.toggleRepeat());
+
+  seek.addEventListener('input', () => { state.seeking = true; $('#t-cur').textContent = fmt(Number(seek.value)); });
+  seek.addEventListener('change', () => { player.seek(Number(seek.value)); state.seeking = false; });
+
+  try { vol.value = localStorage.getItem('adfree_vol') ?? vol.value; } catch { /* storage blocked */ }
+  player.setVolume(Number(vol.value)); // the slider and the audio element start in agreement
+  vol.addEventListener('input', () => {
+    player.setVolume(Number(vol.value));
+    try { localStorage.setItem('adfree_vol', vol.value); } catch { /* storage blocked */ }
   });
 
-  volumeSlider.addEventListener('input', (e) => {
-    player.setVolume(parseFloat(e.target.value));
-  });
-
-  player.subscribe((type, data) => {
+  player.subscribe((type, d) => {
     if (type === 'state') {
-      playPauseBtn.innerHTML = data.isPlaying ? '⏸' : '▶';
-      shuffleBtn.classList.toggle('active', data.isShuffle);
-      repeatBtn.classList.toggle('active', data.repeatMode !== 'off');
+      $('#b-play').textContent = d.isPlaying ? 'PAUSE' : 'PLAY';
+      $('#b-shuf').textContent = d.isShuffle ? 'SHUF:ON' : 'SHUF:OFF';
+      $('#b-shuf').classList.toggle('on', d.isShuffle);
+      $('#b-rep').textContent = REP[d.repeatMode];
+      $('#b-rep').classList.toggle('on', d.repeatMode !== 'off');
 
-      if (data.track) {
-        titleEl.innerText = data.track.title;
-        artistEl.innerText = data.track.artist_name || 'Unknown Artist';
-        if (data.track.artwork_url) {
-          coverImg.innerHTML = `<img src="${data.track.artwork_url}" style="width:100%; height:100%; border-radius:6px; object-fit:cover;" />`;
-        } else {
-          coverImg.innerHTML = '🎵';
-        }
-      }
+      const t = d.track;
+      $('#np-title').textContent = t ? t.title : '-- nothing loaded --';
+      $('#np-sub').textContent = t ? `${t.artist_name || 'Unknown Artist'} / ${t.album_title || 'Unknown Album'}` : '\u00a0';
+      art.innerHTML = t && t.artwork_url ? `<img src="${esc(t.artwork_url)}" alt="">` : 'NO ART';
+      document.title = t ? `${t.title} - ${t.artist_name || 'Unknown Artist'}` : 'AdFreeShono';
 
-      // Highlight playing row in active table
-      document.querySelectorAll('.songs-table tr').forEach(row => {
-        row.classList.toggle('playing', row.dataset.songId === data.track?.id);
-      });
-    } else if (type === 'progress') {
-      if (!state.isSeeking) {
-        progressSlider.max = data.duration || 100;
-        progressSlider.value = data.currentTime || 0;
-        currentTimeEl.innerText = formatTime(data.currentTime);
-        totalTimeEl.innerText = formatTime(data.duration);
-      }
+      document.querySelectorAll('tr[data-id]').forEach((row) =>
+        row.classList.toggle('playing', !!t && row.dataset.id === t.id));
+    } else if (type === 'progress' && !state.seeking) {
+      seek.max = d.duration || 100;
+      seek.value = d.currentTime || 0;
+      $('#t-cur').textContent = fmt(d.currentTime);
+      $('#t-dur').textContent = fmt(d.duration);
+    } else if (type === 'error') {
+      setStatus(`Cannot play "${d.track.title}" (file missing?)`, true);
     }
   });
+
+  player.notifyState(); // draw the initial labels
 }
 
-// Search bar input
-function setupSearchInput() {
-  const input = document.getElementById('global-search');
-  let timeout = null;
+/* ---------- start ---------- */
+
+function setupSearch() {
+  const input = $('#search');
+  let timer;
   input.addEventListener('input', () => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
       const q = input.value.trim();
-      if (q) {
-        navigateTo('search', q);
-      } else if (state.currentView === 'search') {
-        navigateTo('home');
-      }
+      if (q) location.hash = '#/search/' + encodeURIComponent(q);
+      else if (state.route === 'search') location.hash = '#/home';
     }, 300);
   });
 }
 
-// Service Worker registration
-function registerSW() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(e => console.log('SW registration skipped', e));
-  }
-}
+document.addEventListener('DOMContentLoaded', async () => {
+  setupDeck();
+  setupSearch();
+  window.addEventListener('hashchange', () => route());
 
-// Application Init
-document.addEventListener('DOMContentLoaded', () => {
-  setupPlayerUI();
-  setupSearchInput();
-  registerSW();
-  navigateTo('home');
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => { /* optional */ });
+  }
+
+  try { await refreshAuth(); } catch { /* the first real request will surface any problem */ }
+  if (location.hash) route(); else location.hash = '#/home';
 });

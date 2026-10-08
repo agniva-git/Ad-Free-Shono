@@ -1,5 +1,5 @@
+import hashlib
 import os
-import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 import mutagen
@@ -113,10 +113,13 @@ def extract_metadata(file_path: Path) -> Dict[str, Any]:
 
             # Save extracted artwork
             if artwork_data:
-                art_id = f"art_{uuid.uuid4().hex[:12]}{artwork_ext}"
+                # Name the file after its content so identical covers are stored once
+                digest = hashlib.sha1(artwork_data).hexdigest()[:16]
+                art_id = f"art_{digest}{artwork_ext}"
                 art_dest = settings.artwork_path / art_id
-                with open(art_dest, "wb") as f:
-                    f.write(artwork_data)
+                if not art_dest.exists():
+                    with open(art_dest, "wb") as f:
+                        f.write(artwork_data)
                 metadata["artwork_filename"] = art_id
 
     except Exception as e:

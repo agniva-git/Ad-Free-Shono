@@ -17,6 +17,12 @@ A self-hosted, **100% Zero-Cost (₹0 / $0 recurring)** personal music library, 
 
 ## 🚀 Quick Start
 
+> Hosting it on the internet? See **DEPLOY.md**.
+
+### 0. Configure
+Copy `.env.example` to `.env` and set `ACCESS_PASSWORD` (login for phone/Wi-Fi access) and `SECRET_KEY` (any long random string).
+Set `HOST=127.0.0.1` instead if you only want to use it on this PC.
+
 ### 1. Start the Server
 With Python 3.10+ installed:
 ```bash
@@ -46,7 +52,7 @@ The terminal will display your access links:
 ## 📁 Project Architecture
 
 ```
-AdFree/
+AdFreeShono/
 ├── backend/
 │   ├── app/
 │   │   ├── api/          # REST endpoints (songs, playlists, search, upload, scan)
@@ -77,7 +83,15 @@ AdFree/
 
 ---
 
-## 🧪 Running Tests
+## Running Tests
 ```bash
-.\.venv\Scripts\python.exe -m pytest -v backend/tests/test_api.py
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -v backend/tests
 ```
+Tests use a temporary database and never touch your library.
+
+## Backups
+```bash
+.\.venv\Scripts\python.exe scripts/backup.py --include-external
+```
+Also copies songs added by folder scans. Restore with `--restore <backup folder>`.

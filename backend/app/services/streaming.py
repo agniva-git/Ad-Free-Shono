@@ -1,68 +1,90 @@
-import os
-import mimetypes
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Optional, Tuple
+
 from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 
-CHUNK_SIZE = 128 * 1024  # 128 KB chunks
+CHUNK_SIZE = 128 * 1024  # 128 KB
 
-def send_file_range_response(file_path: Path, range_header: str | None) -> StreamingResponse:
+MIME_BY_SUFFIX = {
+    ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
+}
+
+
+class RangeNotSatisfiable(Exception):
+    pass
+
+
+def parse_range(header: str, size: int) -> Optional[Tuple[int, int]]:
+    """Parse the first byte range of a Range header into inclusive (start, end).
+    Returns None for headers that should be ignored (malformed / other units);
+    raises RangeNotSatisfiable when the range lies outside the file."""
+    try:
+        unit, _, spec = header.partition("=")
+        if unit.strip().lower() != "bytes":
+            return None
+        first = spec.split(",")[0].strip()
+        start_s, _, end_s = first.partition("-")
+        if start_s == "":  # suffix form "bytes=-500" means the last 500 bytes
+            count = int(end_s)
+            if count <= 0:
+                raise RangeNotSatisfiable()
+            return max(size - count, 0), size - 1
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start >= size or end < start:
+        raise RangeNotSatisfiable()
+    return start, min(end, size - 1)  # an end past EOF is clamped, per the HTTP spec
+
+
+def send_file_range_response(file_path: Path, range_header: Optional[str]) -> StreamingResponse:
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found")
 
     file_size = file_path.stat().st_size
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    if not mime_type:
-        mime_type = "audio/mpeg"
+    mime_type = MIME_BY_SUFFIX.get(file_path.suffix.lower(), "application/octet-stream")
 
-    start = 0
-    end = file_size - 1
-
-    if range_header:
-        # Expected format: "bytes=0-1024" or "bytes=1024-"
+    start, end = 0, max(file_size - 1, 0)
+    partial = False
+    if range_header and file_size > 0:
         try:
-            bytes_unit, ranges = range_header.strip().split("=")
-            if bytes_unit.strip() == "bytes":
-                start_str, end_str = ranges.split("-", 1)
-                if start_str.strip():
-                    start = int(start_str.strip())
-                if end_str.strip():
-                    end = int(end_str.strip())
-        except Exception:
-            start = 0
-            end = file_size - 1
+            parsed = parse_range(range_header, file_size)
+        except RangeNotSatisfiable:
+            raise HTTPException(
+                status_code=416,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+        if parsed:
+            start, end = parsed
+            partial = True
 
-    if start >= file_size or end >= file_size or start > end:
-        raise HTTPException(
-            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
-            detail="Requested range not satisfiable",
-            headers={"Content-Range": f"bytes */{file_size}"}
-        )
-
-    content_length = (end - start) + 1
+    content_length = (end - start) + 1 if file_size > 0 else 0
 
     def file_stream() -> Generator[bytes, None, None]:
         with open(file_path, "rb") as f:
             f.seek(start)
-            bytes_left = content_length
-            while bytes_left > 0:
-                read_amount = min(CHUNK_SIZE, bytes_left)
-                data = f.read(read_amount)
+            left = content_length
+            while left > 0:
+                data = f.read(min(CHUNK_SIZE, left))
                 if not data:
                     break
-                bytes_left -= len(data)
+                left -= len(data)
                 yield data
 
     headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
         "Content-Type": mime_type,
     }
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
     return StreamingResponse(
         file_stream(),
-        status_code=status.HTTP_206_PARTIAL_CONTENT,
-        headers=headers
+        status_code=status.HTTP_206_PARTIAL_CONTENT if partial else status.HTTP_200_OK,
+        headers=headers,
     )

@@ -10,6 +10,7 @@ from ..models import Song, Artist, Album, Favorite, PlayHistory
 from ..schemas import SongResponse, SongUpdate
 from ..services.streaming import send_file_range_response
 from ..services.helpers import format_song_response
+from ..services.library import internal_audio_path, locate_audio, prune_empty
 from ..config import settings
 
 router = APIRouter(prefix="/songs", tags=["Songs"])
@@ -115,6 +116,7 @@ def update_song(song_id: str, updates: SongUpdate, db: Session = Depends(get_db)
             song.album_id = None
 
     db.commit()
+    prune_empty(db)  # the song may have left an artist/album with nothing in it
     db.refresh(song)
     return format_song_response(song)
 
@@ -124,18 +126,23 @@ def delete_song(song_id: str, delete_file: bool = True, db: Session = Depends(ge
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
 
-    # Optionally delete physical audio file
-    if delete_file and song.audio_path:
-        file_path = settings.music_path / song.audio_path
-        if file_path.exists() and file_path.is_file():
-            try:
-                file_path.unlink()
-            except Exception:
-                pass
+    # Only files inside the app's own storage may be removed. Scanned (zero-copy)
+    # songs point at the user's own folders, so those files are always left alone.
+    owned_file = internal_audio_path(song.audio_path) if (delete_file and song.audio_path) else None
 
     db.delete(song)
     db.commit()
-    return {"message": "Song deleted successfully", "id": song_id}
+
+    file_deleted = False
+    if owned_file and owned_file.is_file():
+        try:
+            owned_file.unlink()
+            file_deleted = True
+        except OSError:
+            pass
+
+    prune_empty(db)
+    return {"message": "Song deleted successfully", "id": song_id, "file_deleted": file_deleted}
 
 @router.get("/{song_id}/stream")
 def stream_song(song_id: str, range: Optional[str] = Header(None), db: Session = Depends(get_db)):
@@ -143,14 +150,9 @@ def stream_song(song_id: str, range: Optional[str] = Header(None), db: Session =
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
 
-    file_path = settings.music_path / song.audio_path
+    file_path = locate_audio(song.audio_path)
     if not file_path.exists():
-        # Check absolute or relative fallback
-        alt_path = Path(song.audio_path)
-        if alt_path.exists():
-            file_path = alt_path
-        else:
-            raise HTTPException(status_code=404, detail="Audio file missing on disk")
+        raise HTTPException(status_code=404, detail="Audio file missing on disk")
 
     return send_file_range_response(file_path, range)
 

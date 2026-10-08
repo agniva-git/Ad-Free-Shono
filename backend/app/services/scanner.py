@@ -13,21 +13,31 @@ from .metadata import extract_metadata
 
 SUPPORTED_EXTS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
 
-FORBIDDEN_ROOTS = {"C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\System Volume Information"}
+def _forbidden_roots() -> list:
+    if os.name == "nt":
+        env = os.environ
+        names = [env.get("SystemRoot", r"C:\Windows"), env.get("ProgramFiles", r"C:\Program Files"),
+                 env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), env.get("ProgramData", r"C:\ProgramData"),
+                 r"C:\System Volume Information"]
+    else:
+        names = ["/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root",
+                 "/run", "/sbin", "/sys", "/usr", "/var"]
+    return [Path(n) for n in names]
+
+FORBIDDEN_ROOTS = _forbidden_roots()
 
 def is_safe_directory(path: Path) -> bool:
-    """Blocks sensitive OS system paths from being scanned."""
+    """Blocks OS system folders and whole-drive / filesystem roots from being scanned."""
     try:
-        resolved = str(path.resolve()).lower()
-        for forbidden in FORBIDDEN_ROOTS:
-            if resolved.startswith(forbidden.lower()):
-                return False
-        # Do not allow scanning raw drive root directly (e.g. C:\)
-        if len(resolved.rstrip("\\/")) <= 3:
-            return False
-        return True
+        resolved = path.resolve()
     except Exception:
         return False
+    if resolved == Path(resolved.anchor):
+        return False
+    for forbidden in FORBIDDEN_ROOTS:
+        if resolved.is_relative_to(forbidden):
+            return False
+    return True
 
 def compute_fast_file_signature(file_path: Path) -> str:
     """Computes a deterministic hash based on file size and first 64KB for instant duplicate matching."""

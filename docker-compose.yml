@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DEBUG: "False"
+      DATA_DIR: /app/data
+      DATABASE_URL: sqlite:////app/data/music.db
+      MUSIC_DIR: /app/data/media/audio
+      ARTWORK_DIR: /app/data/media/artwork
+      # Only Caddy can reach this container (no published port), so trusting its
+      # X-Forwarded-* headers is safe; it lets the app see the real visitor and HTTPS.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - ./data:/app/data          # database, uploaded songs, artwork
+      - ./music:/music:ro         # your own folders, read-only: the app can never delete them
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
