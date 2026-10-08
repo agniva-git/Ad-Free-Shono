@@ -21,8 +21,12 @@ const send = (method, body) => ({
 
 export const API = {
   authStatus: () => request('/auth/status'),
-  login: (password) => request('/login', send('POST', { password })),
+  login: (username, password) => request('/login', send('POST', { username, password })),
   logout: () => request('/logout', { method: 'POST' }),
+  getUsers: () => request('/auth/users'),
+  registerUser: (username, password, isAdmin = false) =>
+    request('/auth/register', send('POST', { username, password, is_admin: isAdmin })),
+  deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),
 
   getSongs: (params = {}) => request('/songs?' + new URLSearchParams(params)),
   getSong: (id) => request(`/songs/${id}`),

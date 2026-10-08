@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#121212">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#141414">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>AdFreeShono</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/assets/icon-192.png">
@@ -14,8 +14,13 @@
 </head>
 <body>
 
+  <!-- Top bar -->
   <header class="topbar">
-    <div class="brand">ADFREESHONO</div>
+    <div class="brand-cluster">
+      <span class="walkman-badge">SONY-ERA</span>
+      <span class="brand">ADFREESHONO</span>
+    </div>
+
     <nav class="nav" id="nav">
       <a href="#/home" data-route="home">Home</a>
       <a href="#/songs" data-route="songs">Songs</a>
@@ -24,38 +29,217 @@
       <a href="#/playlists" data-route="playlists">Playlists</a>
       <a href="#/liked" data-route="liked">Liked</a>
       <a href="#/upload" data-route="upload">Upload</a>
+      <a href="#/users" data-route="users" id="nav-users" hidden>Users</a>
     </nav>
-    <input type="search" id="search" placeholder="search..." autocomplete="off" aria-label="Search">
+
+    <div class="topbar-search">
+      <input type="search" id="search" placeholder="Search library..." autocomplete="off" aria-label="Search">
+    </div>
+
+    <div class="user-pill" id="user-pill" hidden>
+      <span class="user-name" id="user-display"></span>
+      <button id="logout" data-action="logout" title="Log out" aria-label="Logout">Exit</button>
+    </div>
+
     <span id="status" role="status"></span>
-    <button id="logout" data-action="logout" hidden>Logout</button>
   </header>
 
+  <!-- Main router view -->
   <main id="view"></main>
 
-  <footer class="deck">
-    <div class="deck-art" id="art">NO ART</div>
-
-    <div class="deck-main">
-      <div class="label">NOW PLAYING</div>
-      <div id="np-title">-- nothing loaded --</div>
-      <div id="np-sub" class="dim">&nbsp;</div>
-      <div class="deck-seek">
-        <span id="t-cur">0:00</span>
-        <input type="range" id="seek" min="0" max="100" value="0" step="0.1" aria-label="Seek">
-        <span id="t-dur">0:00</span>
+  <!-- Bottom Mini Player Deck -->
+  <footer class="deck" id="deck">
+    <div class="deck-open-btn" id="deck-trigger" title="Open Walkman Player">
+      <div class="mini-vinyl" id="mini-vinyl">
+        <div class="mini-vinyl-center" id="mini-art">♫</div>
+      </div>
+      <div class="deck-track-info">
+        <div id="np-title">-- nothing loaded --</div>
+        <div id="np-sub" class="dim">&nbsp;</div>
       </div>
     </div>
 
-    <div class="deck-controls">
-      <button id="b-prev" title="Previous" aria-label="Previous">|&lt;&lt;</button>
-      <button id="b-play" title="Play / pause" aria-label="Play or pause">PLAY</button>
-      <button id="b-next" title="Next" aria-label="Next">&gt;&gt;|</button>
-      <button id="b-shuf" title="Shuffle">SHUF</button>
-      <button id="b-rep" title="Repeat">REP:ALL</button>
-      <label class="vol">VOL <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8" aria-label="Volume"></label>
+    <div class="deck-desktop-seek">
+      <span id="t-cur-desk">0:00</span>
+      <input type="range" id="seek-desk" min="0" max="100" value="0" step="0.1" aria-label="Seek">
+      <span id="t-dur-desk">0:00</span>
+    </div>
+
+    <div class="deck-quick-controls">
+      <button id="b-prev-mini" class="ctrl-btn" title="Previous track" aria-label="Previous">⏮</button>
+      <button id="b-play-mini" class="ctrl-btn play-btn" title="Play or pause" aria-label="Play or pause">▶</button>
+      <button id="b-next-mini" class="ctrl-btn" title="Next track" aria-label="Next">⏭</button>
+      <button id="deck-expand" class="ctrl-btn expand-btn" title="Open Fullscreen Walkman" aria-label="Expand player">⤢</button>
     </div>
   </footer>
 
+  <!-- Mobile Bottom Navigation Bar -->
+  <nav class="mobile-nav" id="mobile-nav">
+    <a href="#/home" data-route="home" class="mob-tab">
+      <span class="tab-icon">⌂</span>
+      <span class="tab-label">Home</span>
+    </a>
+    <a href="#/songs" data-route="songs" class="mob-tab">
+      <span class="tab-icon">♬</span>
+      <span class="tab-label">Songs</span>
+    </a>
+    <a href="#/playlists" data-route="playlists" class="mob-tab">
+      <span class="tab-icon">☰</span>
+      <span class="tab-label">Playlists</span>
+    </a>
+    <a href="#/liked" data-route="liked" class="mob-tab">
+      <span class="tab-icon">♥</span>
+      <span class="tab-label">Liked</span>
+    </a>
+    <a href="#/upload" data-route="upload" class="mob-tab">
+      <span class="tab-icon">⇪</span>
+      <span class="tab-label">Upload</span>
+    </a>
+  </nav>
+
+  <!-- Walkman Fullscreen Retro Experience -->
+  <section class="walkman-modal" id="walkman-player" aria-hidden="true">
+    <div class="walkman-chassis">
+      
+      <!-- Top Walkman Bezel Header -->
+      <div class="walkman-header">
+        <button id="walkman-close" class="walkman-icon-btn" title="Collapse player" aria-label="Close">
+          <span class="chevron-down">⌄</span>
+        </button>
+        <div class="walkman-brand-plate">
+          <div class="walkman-logo">WALKMAN</div>
+          <div class="walkman-model">MODEL WM-SHONO // 24-BIT Hi-Fi</div>
+        </div>
+        <button id="walkman-fav-top" class="walkman-icon-btn" title="Like track" aria-label="Favorite">
+          <span id="wm-heart">♡</span>
+        </button>
+      </div>
+
+      <!-- LCD / OLED Digital Display Window -->
+      <div class="walkman-screen">
+        
+        <!-- Status Bar inside screen -->
+        <div class="screen-status-bar">
+          <span class="status-indicator">
+            <span class="rec-dot" id="wm-play-indicator"></span>
+            <span id="wm-play-label">STANDBY</span>
+          </span>
+          <span class="format-badge" id="wm-format-badge">FLAC / STEREO</span>
+          <span class="battery-level">BAT ■■■</span>
+        </div>
+
+        <!-- Turntable / Vinyl Record Player -->
+        <div class="turntable-stage">
+          <div class="turntable-platter">
+            <div class="vinyl-disc" id="vinyl-disc">
+              <div class="vinyl-reflection"></div>
+              <div class="vinyl-groove groove-1"></div>
+              <div class="vinyl-groove groove-2"></div>
+              <div class="vinyl-groove groove-3"></div>
+              <div class="vinyl-label" id="vinyl-art">
+                <span class="label-ph">SHONO</span>
+              </div>
+              <div class="vinyl-center-hole"></div>
+            </div>
+            <!-- Tonearm -->
+            <div class="tonearm" id="tonearm">
+              <div class="tonearm-pivot"></div>
+              <div class="tonearm-rod"></div>
+              <div class="tonearm-cartridge"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Track Typography Display -->
+        <div class="screen-track-meta">
+          <div class="marquee-wrapper">
+            <h1 class="screen-track-title" id="wm-title">-- nothing loaded --</h1>
+          </div>
+          <div class="screen-track-sub" id="wm-sub">Ready to play</div>
+        </div>
+
+        <!-- Retro LED Time & Seek Bar -->
+        <div class="screen-seek-cluster">
+          <div class="time-readout">
+            <span id="wm-t-cur" class="time-num">00:00</span>
+            <span class="time-sep">/</span>
+            <span id="wm-t-dur" class="time-num">00:00</span>
+          </div>
+          <div class="seek-slider-wrap">
+            <input type="range" id="wm-seek" min="0" max="100" value="0" step="0.1" aria-label="Seek">
+            <div class="seek-led-track" id="wm-led-track"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Walkman Tactile Jog Wheel & Control Hub -->
+      <div class="walkman-controls-hub">
+        
+        <!-- Outer Aux Buttons Row -->
+        <div class="aux-controls-row">
+          <button id="wm-b-shuf" class="aux-btn" title="Shuffle mode" aria-label="Shuffle">
+            <span class="aux-icon">⇄</span>
+            <span class="aux-text" id="wm-shuf-txt">SHUF</span>
+          </button>
+          
+          <button id="wm-pl-add" class="aux-btn" title="Add to playlist" aria-label="Add to playlist">
+            <span class="aux-icon">＋</span>
+            <span class="aux-text">LIST</span>
+          </button>
+
+          <button id="wm-b-rep" class="aux-btn" title="Repeat mode" aria-label="Repeat">
+            <span class="aux-icon">↻</span>
+            <span class="aux-text" id="wm-rep-txt">REP</span>
+          </button>
+        </div>
+
+        <!-- The Iconic Sony Jog Wheel -->
+        <div class="jog-wheel-assembly">
+          <div class="jog-wheel-outer-ring">
+            
+            <!-- Up/Volume or Mode Button -->
+            <button id="wm-jog-up" class="jog-btn jog-up" title="Volume Up" aria-label="Volume Up">
+              <span class="jog-label">▲ VOL+</span>
+            </button>
+            
+            <!-- Left / Prev Button -->
+            <button id="wm-jog-prev" class="jog-btn jog-left" title="Previous Track" aria-label="Previous">
+              <span class="jog-symbol">⏮</span>
+            </button>
+
+            <!-- Center Tactile Play/Pause Knob -->
+            <div class="jog-center-disc">
+              <button id="wm-jog-play" class="jog-play-btn" title="Play / Pause" aria-label="Play or Pause">
+                <span class="jog-play-icon" id="wm-play-icon">▶</span>
+              </button>
+            </div>
+
+            <!-- Right / Next Button -->
+            <button id="wm-jog-next" class="jog-btn jog-right" title="Next Track" aria-label="Next">
+              <span class="jog-symbol">⏭</span>
+            </button>
+
+            <!-- Down / Volume Down Button -->
+            <button id="wm-jog-down" class="jog-btn jog-down" title="Volume Down" aria-label="Volume Down">
+              <span class="jog-label">▼ VOL−</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Volume Gauge Readout -->
+        <div class="volume-strip">
+          <span class="vol-label">OUTPUT LEVEL</span>
+          <input type="range" id="wm-vol" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+          <span class="vol-pct" id="wm-vol-pct">80%</span>
+        </div>
+
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Generic Dialog Modal -->
   <dialog id="modal"></dialog>
 
   <script type="module" src="/js/app.js"></script>
