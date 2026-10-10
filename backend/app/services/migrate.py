@@ -18,6 +18,13 @@ def migrate_schema(engine) -> None:
             if column not in columns(table):
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
+        # users table migration (handles older schema with is_admin instead of role)
+        if "users" in inspect(conn).get_table_names():
+            add("users", "role", "VARCHAR(10) NOT NULL DEFAULT 'member'")
+            add("users", "is_active", "BOOLEAN NOT NULL DEFAULT 1")
+            if "is_admin" in columns("users"):
+                conn.exec_driver_sql("UPDATE users SET role = 'admin' WHERE is_admin = 1")
+
         add("songs", "uploaded_by", "VARCHAR(36) REFERENCES users(id) ON DELETE SET NULL")
         add("songs", "file_hash", "VARCHAR(64)")
         add("playlists", "user_id", "VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE")
