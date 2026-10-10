@@ -22,11 +22,12 @@ const send = (method, body) => ({
 export const API = {
   authStatus: () => request('/auth/status'),
   login: (username, password) => request('/login', send('POST', { username, password })),
+  changePassword: (current_password, new_password) =>
+    request('/me/password', send('POST', { current_password, new_password })),
+  adminUsers: () => request('/admin/users'),
+  adminCreateUser: (username, password, role) => request('/admin/users', send('POST', { username, password, role })),
+  adminUpdateUser: (id, data) => request(`/admin/users/${id}`, send('PATCH', data)),
   logout: () => request('/logout', { method: 'POST' }),
-  getUsers: () => request('/auth/users'),
-  registerUser: (username, password, isAdmin = false) =>
-    request('/auth/register', send('POST', { username, password, is_admin: isAdmin })),
-  deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),
 
   getSongs: (params = {}) => request('/songs?' + new URLSearchParams(params)),
   getSong: (id) => request(`/songs/${id}`),

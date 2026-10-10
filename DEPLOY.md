@@ -32,17 +32,30 @@ Either push it to a PRIVATE GitHub repo and `git clone` it on the server, or cop
 ## 6. Create the settings file
     cp .env.example .env
     python3 -c "import secrets; print(secrets.token_urlsafe(48))"    # copy the output
-    nano .env                      # set DOMAIN, ACCESS_PASSWORD, SECRET_KEY
+    nano .env                      # set DOMAIN, ADMIN_USERNAME, ADMIN_PASSWORD, SECRET_KEY
 
-The app refuses to start while ACCESS_PASSWORD / SECRET_KEY are placeholders or too weak.
+The app refuses to start while ADMIN_PASSWORD / SECRET_KEY are placeholders or too weak.
+ADMIN_USERNAME / ADMIN_PASSWORD create YOUR admin account the first time the app starts.
+After that they are ignored: change your password from the Account page instead.
 
 ## 7. Start it
     docker compose up -d --build
     docker compose logs -f app     # Ctrl+C to stop watching
 
-Open https://YOUR-DOMAIN and log in. The first start can take a minute while the HTTPS certificate is issued.
+Open https://YOUR-DOMAIN and log in with your admin username and password. The first start can take a minute while the HTTPS certificate is issued.
 
-## 8. Add your music
+## 8. Add your friends
+Open the **Admin** page, fill in a username and a password (10+ characters), and press Create account.
+Send them the username, the password and the web address privately. They can change their own password under **Account**.
+- Everyone shares ONE library: songs anyone uploads are visible to all.
+- Playlists, likes and play history are private to each person (not even the admin sees playlists in the app).
+- Friends can upload (up to MEMBER_QUOTA_MB each, default 5000), and can edit or delete only the songs they uploaded.
+- Only admins can scan server folders, manage accounts, or change songs they did not upload.
+- Deleting a song removes it for everyone, including from other people's playlists.
+- To remove a friend's access, press Disable on the Admin page. It signs them out immediately. Their uploaded songs stay.
+- The same song file cannot be uploaded twice.
+
+## 9. Add your music
 - Bulk: copy your folders into the `music` folder next to docker-compose.yml, then open Upload and scan the folder `/music`.
   Example from your PC: `scp -r "D:\Music" youruser@SERVER_IP:~/AdFreeShono/music/`
   That folder is mounted read-only, so the app can never delete or change those files.
@@ -54,6 +67,10 @@ Open https://YOUR-DOMAIN and log in. The first start can take a minute while the
     docker compose restart app
     docker compose down            # stop everything
 
+## Account recovery (forgot the admin password)
+    docker compose exec -it app python scripts/manage_users.py reset-password YOURNAME
+Other commands: list, create NAME (add --admin for another admin), disable NAME, enable NAME.
+
 ## Backups
     docker compose exec app python scripts/backup.py --dest /app/data/backups --no-music
 
@@ -64,3 +81,5 @@ Keep your original music on your PC; the server copy is a convenience, not a bac
 - "Refusing to start": read the message, fix .env, run `docker compose up -d` again.
 - Site not loading / no certificate: check the domain points to the server IP and ports 80/443 are open (step 3).
 - Locked out after wrong passwords: wait 15 minutes, or `docker compose restart app`.
+- A friend cannot log in: check the username (not case sensitive) and that the account is not disabled (Admin page).
+- Disk filling up: friends' uploads live in `data/media/audio`. Lower MEMBER_QUOTA_MB in .env and run `docker compose up -d`.

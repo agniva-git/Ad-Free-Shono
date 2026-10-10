@@ -3,7 +3,7 @@ import uuid
 import hashlib
 import shutil
 from pathlib import Path
-from typing import Dict, Any, Set
+from typing import Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -53,7 +53,8 @@ def compute_fast_file_signature(file_path: Path) -> str:
     except Exception:
         return f"{file_path.name}_{file_path.stat().st_size}"
 
-def scan_directory(source_dir: Path, db: Session, copy_to_storage: bool = False) -> Dict[str, Any]:
+def scan_directory(source_dir: Path, db: Session, copy_to_storage: bool = False,
+                   uploaded_by: Optional[str] = None) -> Dict[str, Any]:
     """
     Scans a directory for audio files, extracts metadata and populates SQLite.
     Includes security checks and robust duplicate detection.
@@ -154,7 +155,8 @@ def scan_directory(source_dir: Path, db: Session, copy_to_storage: bool = False)
                 duration_seconds=meta["duration_seconds"],
                 genre=meta["genre"],
                 file_size=meta["file_size"],
-                bitrate=meta["bitrate"]
+                bitrate=meta["bitrate"],
+                uploaded_by=uploaded_by,
             )
             db.add(song)
             existing_paths.add(audio_ref)

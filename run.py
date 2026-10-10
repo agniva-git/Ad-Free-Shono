@@ -29,11 +29,6 @@ def main():
     if lan:
         print(f"  On your LAN:  http://{get_local_ip()}:{port}")
     print("=" * 60)
-    if lan and not settings.ACCESS_PASSWORD:
-        print("  WARNING: ACCESS_PASSWORD is empty and the server is reachable from your")
-        print("  network. Anyone on your Wi-Fi can use and change your library.")
-        print("  Set ACCESS_PASSWORD in .env, or set HOST=127.0.0.1.")
-        print("=" * 60)
     print("  Stop server: Ctrl + C\n")
 
     uvicorn.run(

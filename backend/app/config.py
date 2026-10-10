@@ -20,14 +20,13 @@ class Settings(BaseSettings):
     MUSIC_DIR: str = "./data/media/audio"
     ARTWORK_DIR: str = "./data/media/artwork"
 
-    # First-time admin bootstrap. After the first admin exists, these are ignored.
-    ADMIN_USERNAME: str = ""
+    # The first admin account is created from these on first start (if no admin exists yet).
+    ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = ""
-
-    # Must be a long random string. Generate with:
-    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
     SECRET_KEY: str = "change-this-to-a-long-random-string"
-    MAX_UPLOAD_MB: int = 500
+
+    MAX_UPLOAD_MB: int = 500        # largest single file
+    MEMBER_QUOTA_MB: int = 5000     # total uploads allowed per friend account (admins are unlimited)
 
     def _resolve(self, value: str) -> Path:
         p = Path(value)

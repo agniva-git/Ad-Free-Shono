@@ -1,24 +1,24 @@
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ..database import get_db
-from ..models import Song, Artist, Album
+from ..deps import get_current_user
+from ..models import Song, Artist, Album, User
 from ..schemas import SongResponse, ArtistResponse, AlbumResponse
-from ..security import get_current_user
 from ..services.helpers import format_song_response
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
 @router.get("")
-def search_all(q: str = Query(..., min_length=1), db: Session = Depends(get_db),
-               current_user=Depends(get_current_user)):
+def search_all(q: str = Query(..., min_length=1), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     term = f"%{q.strip()}%"
 
+    # Search songs by title, artist name, and album title
     songs = db.query(Song).options(
         joinedload(Song.artist),
         joinedload(Song.album),
-        joinedload(Song.favorite_entries),
+        selectinload(Song.favorites)
     ).outerjoin(Artist, Song.artist_id == Artist.id)\
      .outerjoin(Album, Song.album_id == Album.id)\
      .filter(
@@ -27,8 +27,10 @@ def search_all(q: str = Query(..., min_length=1), db: Session = Depends(get_db),
         (Album.title.ilike(term))
     ).limit(30).all()
 
+    # Search artists
     artists = db.query(Artist).filter(Artist.name.ilike(term)).limit(12).all()
 
+    # Search albums
     albums = db.query(Album).options(
         joinedload(Album.artist),
         joinedload(Album.songs)
@@ -40,7 +42,7 @@ def search_all(q: str = Query(..., min_length=1), db: Session = Depends(get_db),
 
     return {
         "query": q,
-        "songs": [format_song_response(s, user_id=current_user.id) for s in songs],
+        "songs": [format_song_response(s, user) for s in songs],
         "artists": [
             ArtistResponse(
                 id=a.id,

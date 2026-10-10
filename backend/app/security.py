@@ -1,28 +1,26 @@
 import hashlib
 import hmac
+import os
 import threading
 import time
+from typing import Optional
 from urllib.parse import urlparse
 
-import bcrypt as _bcrypt
-from fastapi import Depends, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .database import get_db
 
 COOKIE_NAME = "adfree_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
-PUBLIC_API_PATHS = {"/api/health", "/api/login", "/api/logout", "/api/auth/status"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MIN_PASSWORD_LENGTH = 10
 PLACEHOLDER_WORDS = ("change-me", "change-this", "replace-with", "any-long", "pick-a-password",
                      "your own password", "generated value", "example")
-COMMON_PASSWORDS = {"password", "password1", "12345678", "123456789", "qwertyuiop", "adminadmin",
-                    "letmein123", "hunter2", "adfreeshono", "iloveyou"}
+COMMON_PASSWORDS = {"password", "password1", "12345678", "123456789", "1234567890", "qwertyuiop",
+                    "adminadmin", "letmein123", "hunter2", "adfreeshono", "iloveyou"}
 
 CSP = ("default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
@@ -31,30 +29,81 @@ CSP = ("default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 's
 
 # ---------- startup safety check ----------
 
-def check_security_config() -> None:
-    """Refuse to start with a configuration that would leave the library open or guessable."""
-    problems = []
+def secret_key_problem() -> Optional[str]:
     key = settings.SECRET_KEY
-
     if len(key) < 32 or any(w in key.lower() for w in PLACEHOLDER_WORDS):
-        problems.append("SECRET_KEY is missing, too short (under 32 characters) or still a placeholder. "
-                        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\"")
-
-    if problems:
-        raise RuntimeError("Refusing to start because of unsafe settings in .env:\n  - " + "\n  - ".join(problems))
+        return ("SECRET_KEY is missing, too short (under 32 characters) or still a placeholder. Generate one with: "
+                "python -c \"import secrets; print(secrets.token_urlsafe(48))\"")
+    return None
 
 
-# ---------- password hashing (bcrypt 4+) ----------
+def check_security_config() -> None:
+    """Refuse to start when the key that signs login cookies is weak or a placeholder."""
+    problem = secret_key_problem()
+    if problem:
+        raise RuntimeError("Refusing to start because of unsafe settings in .env:\n  - " + problem)
 
-def hash_password(plain: str) -> str:
-    return _bcrypt.hashpw(plain.encode(), _bcrypt.gensalt()).decode()
+
+# ---------- passwords ----------
+
+def password_problems(password: str, username: str = "") -> list:
+    problems = []
+    low = password.lower()
+    if len(password) < MIN_PASSWORD_LENGTH:
+        problems.append(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    if low in COMMON_PASSWORDS or any(w in low for w in PLACEHOLDER_WORDS):
+        problems.append("That password is a placeholder or a very common one. Choose another.")
+    if username and low == username.lower():
+        problems.append("Password must not be the same as the username.")
+    return problems
 
 
-def verify_password(plain: str, hashed: str) -> bool:
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return f"scrypt${2 ** 14}$8$1${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
     try:
-        return _bcrypt.checkpw(plain.encode(), hashed.encode())
+        _algo, n, r, p, salt_hex, digest_hex = stored.split("$")
+        expected = bytes.fromhex(digest_hex)
+        digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex),
+                                n=int(n), r=int(r), p=int(p), dklen=len(expected))
+        return hmac.compare_digest(digest, expected)
     except Exception:
         return False
+
+
+# Verified when a username does not exist, so a wrong username takes as long as a wrong password
+DUMMY_HASH = hash_password("not-a-real-account-password")
+
+
+# ---------- sessions (signed cookie: "<user id>.<signature>") ----------
+# The signature covers the user's current password hash, so changing or resetting a
+# password immediately logs that account out everywhere.
+
+def _signature(user_id: str, password_hash: str) -> str:
+    msg = f"{user_id}:{password_hash}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+
+
+def make_session_cookie(user) -> str:
+    return f"{user.id}.{_signature(user.id, user.password_hash)}"
+
+
+def user_from_request(request: Request, db: Session):
+    from .models import User  # imported here to avoid a circular import at startup
+    cookie = request.cookies.get(COOKIE_NAME, "")
+    user_id, _, supplied = cookie.partition(".")
+    if not user_id or not supplied:
+        return None
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return None
+    if not hmac.compare_digest(supplied, _signature(user.id, user.password_hash)):
+        return None
+    return user
 
 
 # ---------- login attempt limiting ----------
@@ -66,6 +115,7 @@ _lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
+    # Behind the reverse proxy, uvicorn already replaces this with the real visitor address
     return request.client.host if request.client else "unknown"
 
 
@@ -82,7 +132,7 @@ def login_retry_after(ip: str) -> int:
 
 def record_login_failure(ip: str) -> None:
     with _lock:
-        if len(_failures) > 5000:
+        if len(_failures) > 5000:  # keep memory bounded
             _failures.clear()
         _failures.setdefault(ip, []).append(time.time())
 
@@ -97,57 +147,10 @@ def reset_login_limiter() -> None:
         _failures.clear()
 
 
-# ---------- session tokens (encode user_id) ----------
-
-def session_token(user_id: str) -> str:
-    """Produce a tamper-evident cookie value for a specific user."""
-    msg = f"session:{user_id}".encode()
-    return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest() + ":" + user_id
-
-
-def _parse_token(token: str) -> str | None:
-    """Return user_id if the token is valid, else None."""
-    if ":" not in token:
-        return None
-    sig, _, user_id = token.partition(":")
-    expected_sig = hmac.new(settings.SECRET_KEY.encode(), f"session:{user_id}".encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
-        return None
-    return user_id
-
-
-def get_user_id_from_cookie(request: Request) -> str | None:
-    """Extract and verify the user_id from the session cookie."""
-    token = request.cookies.get(COOKIE_NAME, "")
-    return _parse_token(token) if token else None
-
-
-# ---------- FastAPI dependency for current user ----------
-
-def get_current_user(request: Request, db: Session = Depends(get_db)):
-    """FastAPI dependency — returns the logged-in User ORM object.
-    Raises 401 if not authenticated.
-    """
-    from .models import User
-    user_id = get_user_id_from_cookie(request)
-    if not user_id:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Login required")
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
-
-
-# ---------- request guards (middleware) ----------
-
-def is_authenticated(request: Request) -> bool:
-    return get_user_id_from_cookie(request) is not None
-
+# ---------- request guards ----------
 
 def is_same_origin(request: Request) -> bool:
-    """Browsers attach Origin to cross-site writes; reject unless it is this server."""
+    """Browsers attach Origin to cross-site writes; reject it unless it is this server."""
     origin = request.headers.get("origin")
     if not origin:
         return True
@@ -155,12 +158,8 @@ def is_same_origin(request: Request) -> bool:
 
 
 async def guard_api(request: Request, call_next):
-    path = request.url.path
-    if path.startswith("/api/"):
-        if request.method not in SAFE_METHODS and not is_same_origin(request):
-            return JSONResponse(status_code=403, content={"detail": "Cross-origin request blocked"})
-        if path not in PUBLIC_API_PATHS and not is_authenticated(request):
-            return JSONResponse(status_code=401, content={"detail": "Login required"})
+    if request.url.path.startswith("/api/") and request.method not in SAFE_METHODS and not is_same_origin(request):
+        return JSONResponse(status_code=403, content={"detail": "Cross-origin request blocked"})
     return await call_next(request)
 
 

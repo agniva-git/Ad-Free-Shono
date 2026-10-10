@@ -5,17 +5,10 @@ const $ = (sel) => document.querySelector(sel);
 const view = $('#view');
 const modal = $('#modal');
 
-// Application state
-const state = {
-  nav: 0,
-  route: 'home',
-  lists: {},
-  seeking: false,
-  user: null,
-  walkmanOpen: false,
-};
+// lists: song arrays currently on screen, so a row click can play "this list from here"
+const state = { nav: 0, route: 'home', lists: {}, seeking: false, user: null };
 
-/* ---------- Helpers ---------- */
+/* ---------- helpers ---------- */
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -46,7 +39,7 @@ function setStatus(msg, isError = false) {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const head = (title, actions = '') =>
   `<div class="head"><h1>${esc(title)}</h1><div class="actions">${actions}</div></div>`;
-const playAll = (list, label = '▶ Play all') =>
+const playAll = (list, label = 'Play all') =>
   `<button data-action="play-all" data-list="${list}">${label}</button>`;
 const empty = (msg) => `<p class="dim">${msg}</p>`;
 
@@ -64,13 +57,14 @@ function songTable(songs, list, { artist = true, album = true, playlistId = null
   const rows = songs.map((s, i) => {
     const play = `data-action="play" data-list="${list}" data-i="${i}"`;
     const id = esc(s.id);
-    const favIcon = s.is_favorite ? '♥' : '♡';
-    const fav = `<button data-action="fav" data-id="${id}" title="Like / unlike" aria-label="Like or unlike">${favIcon}</button>`;
+    const fav = `<button data-action="fav" data-id="${id}" title="Like / unlike" aria-label="Like or unlike">${s.is_favorite ? '[*]' : '[ ]'}</button>`;
+    const owner = s.can_edit
+      ? `<button data-action="edit" data-id="${id}" title="Edit details" aria-label="Edit details">[e]</button>
+         <button data-action="delete" data-id="${id}" title="Delete" aria-label="Delete">[x]</button>`
+      : '';
     const tools = playlistId
-      ? `<button data-action="pl-remove" data-pl="${esc(playlistId)}" data-id="${id}" title="Remove from playlist" aria-label="Remove">✕</button>`
-      : `<button data-action="pl-add" data-id="${id}" title="Add to playlist" aria-label="Add to playlist">＋</button>
-         <button data-action="edit" data-id="${id}" title="Edit details" aria-label="Edit details">✎</button>
-         <button data-action="delete" data-id="${id}" title="Delete" aria-label="Delete">🗑</button>`;
+      ? `<button data-action="pl-remove" data-pl="${esc(playlistId)}" data-id="${id}" title="Remove from playlist" aria-label="Remove from playlist">[-]</button>`
+      : `<button data-action="pl-add" data-id="${id}" title="Add to playlist" aria-label="Add to playlist">[+]</button>${owner}`;
     return `<tr data-id="${id}"${s.id === playingId ? ' class="playing"' : ''}>
       <td class="n" ${play}>${i + 1}</td>
       <td class="t" ${play}>${esc(s.title)}<span class="sub">${esc(s.artist_name)}</span></td>
@@ -91,7 +85,7 @@ function songTable(songs, list, { artist = true, album = true, playlistId = null
     <tbody>${rows}</tbody></table>`;
 }
 
-/* ---------- Views ---------- */
+/* ---------- views: each returns { html, after? } ---------- */
 
 async function viewHome() {
   const [stats, added, liked, recent] = await Promise.all([
@@ -105,15 +99,15 @@ async function viewHome() {
     <span>SONGS <b>${stats.total_songs}</b></span>
     <span>ARTISTS <b>${stats.total_artists}</b></span>
     <span>ALBUMS <b>${stats.total_albums}</b></span>
-    <span>MY PLAYLISTS <b>${stats.total_playlists}</b></span>
+    <span>PLAYLISTS <b>${stats.total_playlists}</b></span>
     <span>LIKED <b>${liked.length}</b></span>
-    <span>RUNTIME <b>${fmtLong(stats.total_duration_seconds)}</b></span>
+    <span>TOTAL TIME <b>${fmtLong(stats.total_duration_seconds)}</b></span>
   </div>`;
 
   if (stats.total_songs === 0) {
     return { html: head('Home') + readout +
       `<div class="box"><p>The library is empty.</p>
-       <p class="dim">Upload audio files, or point the scanner at a folder on your server.</p>
+       <p class="dim">Upload audio files, or point the scanner at a folder on this computer.</p>
        <a href="#/upload"><button>Go to upload</button></a></div>` };
   }
 
@@ -134,7 +128,7 @@ async function viewSongs() {
 async function viewLiked() {
   const songs = await API.getSongs({ favorites_only: true });
   return { html: head(`Liked songs (${songs.length})`, songs.length ? playAll('liked') : '') +
-    (songs.length ? songTable(songs, 'liked') : empty('Nothing liked yet. Tap ♡ on any song.')) };
+    (songs.length ? songTable(songs, 'liked') : empty('Nothing liked yet. Use [ ] on any song.')) };
 }
 
 async function viewArtists() {
@@ -142,7 +136,7 @@ async function viewArtists() {
   return { html: head(`Artists (${artists.length})`) +
     (artists.length
       ? `<div class="grid">${artists.map((a) =>
-          card(`#/artist/${a.id}`, a.artwork_path, 'ARTIST', a.name, plural(a.song_count, 'track'))).join('')}</div>`
+          card(`#/artist/${a.id}`, a.artwork_path, 'NO IMG', a.name, plural(a.song_count, 'track'))).join('')}</div>`
       : empty('No artists yet.')) };
 }
 
@@ -160,7 +154,7 @@ async function viewAlbums() {
   return { html: head(`Albums (${albums.length})`) +
     (albums.length
       ? `<div class="grid">${albums.map((al) =>
-          card(`#/album/${al.id}`, al.artwork_path, 'ALBUM', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>`
+          card(`#/album/${al.id}`, al.artwork_path, 'NO ART', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>`
       : empty('No albums yet.')) };
 }
 
@@ -175,11 +169,11 @@ async function viewAlbum(id) {
 
 async function viewPlaylists() {
   const playlists = await API.getPlaylists();
-  return { html: head(`My Playlists (${playlists.length})`, '<button data-action="pl-new">＋ New playlist</button>') +
+  return { html: head(`Playlists (${playlists.length})`, '<button data-action="pl-new">New playlist</button>') +
     (playlists.length
       ? `<div class="grid">${playlists.map((p) =>
           card(`#/playlist/${p.id}`, null, 'PLAYLIST', p.name, plural(p.song_count, 'track'))).join('')}</div>`
-      : empty('No playlists yet. Create your first private playlist!')) };
+      : empty('No playlists yet. Playlists are private: only you can see yours.')) };
 }
 
 async function viewPlaylist(id) {
@@ -192,7 +186,7 @@ async function viewPlaylist(id) {
     `<p class="dim">${esc(p.description || '')} ${plural(p.song_count, 'track')}</p>` +
     (p.songs.length
       ? songTable(p.songs, 'playlist', { playlistId: p.id })
-      : empty('This playlist is empty. Tap [+] on any song to add it.')) };
+      : empty('This playlist is empty. Use [+] on any song to add it.')) };
 }
 
 async function viewSearch(q) {
@@ -205,39 +199,40 @@ async function viewSearch(q) {
     (r.songs.length ? `<h2>Songs</h2>${songTable(r.songs, 'search')}` : '') +
     (r.artists.length
       ? `<h2>Artists</h2><div class="grid">${r.artists.map((a) =>
-          card(`#/artist/${a.id}`, a.artwork_path, 'ARTIST', a.name, plural(a.song_count, 'track'))).join('')}</div>` : '') +
+          card(`#/artist/${a.id}`, a.artwork_path, 'NO IMG', a.name, plural(a.song_count, 'track'))).join('')}</div>` : '') +
     (r.albums.length
       ? `<h2>Albums</h2><div class="grid">${r.albums.map((al) =>
-          card(`#/album/${al.id}`, al.artwork_path, 'ALBUM', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>` : '') +
+          card(`#/album/${al.id}`, al.artwork_path, 'NO ART', al.title, al.artist_name || 'Unknown Artist')).join('')}</div>` : '') +
     (none ? empty('Nothing found.') : '') };
 }
 
 function viewUpload() {
   const html = head('Upload and scan') +
-    `<div class="drop" id="drop">Drop audio files here, or tap to browse
+    `<div class="drop" id="drop">Drop audio files here, or click to browse
        <div class="dim">MP3 FLAC M4A AAC OGG OPUS WAV</div>
+       <div class="dim">Songs you upload are shared with everyone who has an account.</div>
        <input type="file" id="file-input" accept="audio/*" multiple hidden>
      </div>
      <div id="upload-out" class="box" hidden></div>
 
      <div class="box">
-       <h2>Override tags (single file upload)</h2>
-       <p class="dim">Optional: fill this out before dropping a single file if metadata is missing.</p>
+       <h2>Override tags (one file only)</h2>
+       <p class="dim">Used only when you upload a single file with missing or wrong tags.</p>
        <label class="field"><span>Title</span><input id="m-title"></label>
        <label class="field"><span>Artist</span><input id="m-artist"></label>
        <label class="field"><span>Album</span><input id="m-album"></label>
        <label class="field"><span>Genre</span><input id="m-genre"></label>
      </div>
 
-     <div class="box">
-       <h2>Scan server folder</h2>
-       <p class="dim">Scans music stored on the server directory without copying files.</p>
+     ${state.user?.role === 'admin' ? `<div class="box">
+       <h2>Scan a folder on the server</h2>
+       <p class="dim">Songs are indexed where they are. Nothing is copied, and deleting a song here never deletes the file.</p>
        <div class="row">
-         <input id="scan-path" placeholder="Path on server (leave blank for default music folder)">
+         <input id="scan-path" placeholder="/music   (empty = the app's own audio folder)">
          <button id="scan-btn" data-action="scan">Scan folder</button>
        </div>
        <p id="scan-out" style="margin-top:10px"></p>
-     </div>`;
+     </div>` : ''}`;
 
   const after = () => {
     const drop = $('#drop');
@@ -255,52 +250,40 @@ function viewUpload() {
   return { html, after };
 }
 
-/* User management view for admins */
-async function viewUsers() {
-  if (!state.user?.is_admin) {
-    return { html: head('Access Denied') + '<p class="error">Admin privileges required.</p>' };
-  }
-  const users = await API.getUsers();
-  const rows = users.map((u) => {
-    const canDelete = u.id !== state.user.id;
-    return `<tr>
-      <td>${esc(u.username)}</td>
-      <td>${u.is_admin ? '<span class="gold">Admin</span>' : 'Member'}</td>
-      <td class="dim">${new Date(u.created_at).toLocaleDateString()}</td>
-      <td>${canDelete ? `<button data-action="user-del" data-id="${esc(u.id)}" data-name="${esc(u.username)}">Delete</button>` : '(You)'}</td>
-    </tr>`;
-  }).join('');
-
-  const html = head('Manage User Accounts') +
+async function viewAdmin() {
+  if (state.user?.role !== 'admin') return { html: head('Admin') + '<p class="error">Admins only.</p>' };
+  const users = await API.adminUsers();
+  const rows = users.map((u) => `<tr>
+      <td>${esc(u.username)}</td><td>${esc(u.role)}</td>
+      <td class="${u.is_active ? '' : 'error'}">${u.is_active ? 'active' : 'DISABLED'}</td>
+      <td class="time">${u.upload_count}</td>
+      <td class="acts">
+        <button data-action="user-pw" data-id="${esc(u.id)}" data-name="${esc(u.username)}">Reset password</button>
+        ${u.id === state.user.id ? '' : `<button data-action="user-toggle" data-id="${esc(u.id)}" data-active="${u.is_active}">${u.is_active ? 'Disable' : 'Enable'}</button>`}
+      </td></tr>`).join('');
+  return { html: head(`Accounts (${users.length})`) +
     `<div class="box">
-      <h2>Create New Account</h2>
-      <p class="dim">Create an account for a friend. Only admins can invite new users.</p>
-      <div class="field"><span>Username</span><input id="new-u-name" autocomplete="off"></div>
-      <div class="field"><span>Password</span><input type="password" id="new-u-pass" autocomplete="new-password"></div>
-      <div class="row">
-        <label><input type="checkbox" id="new-u-admin"> Grant Admin privileges</label>
-        <button data-action="user-create">Create Account</button>
-      </div>
-      <p id="new-u-msg" style="margin-top:8px"></p>
-    </div>
-    <h2>Existing Users (${users.length})</h2>
-    <table class="songs">
-      <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-
-  return { html };
+       <h2>Add a friend</h2>
+       <p class="dim">They can listen, upload, and keep private playlists and likes. Only admins can scan folders or manage accounts. Send them the username and password privately.</p>
+       <label class="field"><span>Username (letters, numbers, . _ -)</span><input id="nu-name" autocomplete="off"></label>
+       <label class="field"><span>Password (10+ characters)</span><input id="nu-pw" autocomplete="off"></label>
+       <label class="field"><span>Role</span><select id="nu-role"><option value="member">friend</option><option value="admin">admin</option></select></label>
+       <button data-action="user-create">Create account</button>
+       <p id="nu-msg" class="error" style="margin-top:10px"></p>
+     </div>
+     <table class="songs">
+       <thead><tr><th>Username</th><th>Role</th><th>Status</th><th class="time">Uploads</th><th></th></tr></thead>
+       <tbody>${rows}</tbody></table>` };
 }
 
-/* ---------- Router ---------- */
+/* ---------- router ---------- */
 
 const routes = {
   home: viewHome, songs: viewSongs, liked: viewLiked,
   artists: viewArtists, artist: viewArtist,
   albums: viewAlbums, album: viewAlbum,
   playlists: viewPlaylists, playlist: viewPlaylist,
-  search: viewSearch, upload: viewUpload,
-  users: viewUsers,
+  search: viewSearch, upload: viewUpload, admin: viewAdmin,
 };
 const NAV_OF = { artist: 'artists', album: 'albums', playlist: 'playlists' };
 
@@ -311,14 +294,8 @@ async function route(quiet = false) {
   const key = routes[name] ? name : 'home';
   state.route = key;
 
-  // Sync desktop navigation active state
   document.querySelectorAll('#nav a').forEach((a) =>
     a.classList.toggle('active', a.dataset.route === (NAV_OF[key] || key)));
-
-  // Sync mobile bottom navigation active state
-  document.querySelectorAll('#mobile-nav a').forEach((a) =>
-    a.classList.toggle('active', a.dataset.route === (NAV_OF[key] || key)));
-
   const search = $('#search');
   if (key === 'search') { if (search.value.trim() !== arg) search.value = arg || ''; }
   else if (search.value) search.value = '';
@@ -326,7 +303,7 @@ async function route(quiet = false) {
   if (!quiet) view.innerHTML = '<p class="dim">Loading...</p>';
   try {
     const out = await routes[key](arg);
-    if (token !== state.nav) return;
+    if (token !== state.nav) return; // a newer navigation started; drop this result
     view.innerHTML = out.html;
     if (out.after) out.after();
   } catch (err) {
@@ -336,43 +313,38 @@ async function route(quiet = false) {
   }
 }
 
-/* ---------- Authentication ---------- */
+/* ---------- login ---------- */
+
+function renderHeader() {
+  const u = state.user;
+  $('#whoami').textContent = u ? `${u.username}${u.role === 'admin' ? ' (admin)' : ''}` : '';
+  $('#b-account').hidden = !u;
+  $('#logout').hidden = !u;
+  $('#nav-admin').hidden = !(u && u.role === 'admin');
+}
 
 async function refreshAuth() {
-  try {
-    const s = await API.authStatus();
-    if (s.authenticated) {
-      state.user = s;
-      $('#user-pill').hidden = false;
-      $('#user-display').textContent = s.username;
-      $('#nav-users').hidden = !s.is_admin;
-      return s;
-    }
-  } catch { /* not logged in */ }
-  state.user = null;
-  $('#user-pill').hidden = true;
-  $('#nav-users').hidden = true;
-  return null;
+  const s = await API.authStatus();
+  state.user = s.user;
+  renderHeader();
+  return s;
 }
 
 function showLogin() {
-  state.nav++;
-  $('#user-pill').hidden = true;
+  state.nav++; // cancel any pending render
+  state.user = null;
+  renderHeader();
   view.innerHTML = `<div class="login">
-    <div style="text-align:center; margin-bottom:16px;">
-      <span class="walkman-badge">ADFREESHONO</span>
-      <h1 style="margin-top:8px;">Sign In</h1>
-      <p class="dim">Enter your credentials to access the cloud library.</p>
-    </div>
-    <label class="field"><span>Username</span><input type="text" id="u-name" autocomplete="username" autofocus></label>
-    <label class="field"><span>Password</span><input type="password" id="u-pass" autocomplete="current-password"></label>
-    <button data-action="login" style="width:100%; margin-top:8px; padding:10px;">Connect to Walkman</button>
-    <p id="login-msg" class="error" style="margin-top:12px; text-align:center;"></p>
+    <h1>Login</h1>
+    <label class="field"><span>Username</span><input id="lg-user" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label class="field"><span>Password</span><input type="password" id="pw" autocomplete="current-password"></label>
+    <button data-action="login">Enter</button>
+    <p id="login-msg" class="error" style="margin-top:10px"></p>
   </div>`;
-  $('#u-name')?.focus();
+  $('#lg-user').focus();
 }
 
-/* ---------- Modals ---------- */
+/* ---------- modals ---------- */
 
 function openModal(html) {
   modal.innerHTML = html;
@@ -382,7 +354,7 @@ function closeModal() {
   if (modal.open) modal.close();
 }
 
-/* ---------- Uploads and Scans ---------- */
+/* ---------- uploads and scans ---------- */
 
 async function uploadFiles(files) {
   const out = $('#upload-out');
@@ -410,7 +382,7 @@ async function uploadFiles(files) {
     failed.map((f) => `<div class="error">${esc(f)}</div>`).join('');
 }
 
-/* ---------- Click Actions ---------- */
+/* ---------- click actions ---------- */
 
 const listSong = (el) => state.lists[el.dataset.list]?.[Number(el.dataset.i)];
 
@@ -428,14 +400,8 @@ const actions = {
 
   async fav(el) {
     const r = await API.toggleFavorite(el.dataset.id);
-    el.textContent = r.is_favorite ? '♥' : '♡';
-    Object.values(state.lists).forEach((l) => l.forEach((s) => {
-      if (s.id === el.dataset.id) s.is_favorite = r.is_favorite;
-    }));
-    // Sync walkman heart if current song
-    if (player.currentTrack?.id === el.dataset.id) {
-      $('#wm-heart').textContent = r.is_favorite ? '♥' : '♡';
-    }
+    el.textContent = r.is_favorite ? '[*]' : '[ ]';
+    Object.values(state.lists).forEach((l) => l.forEach((s) => { if (s.id === el.dataset.id) s.is_favorite = r.is_favorite; }));
     if (state.route === 'liked') route(true);
   },
 
@@ -464,7 +430,7 @@ const actions = {
     const pl = await API.createPlaylist(name);
     await API.addSongToPlaylist(pl.id, el.dataset.id);
     closeModal();
-    setStatus(`Created "${name}" and added song`);
+    setStatus(`Created "${name}" and added the song`);
   },
 
   async 'pl-new'() {
@@ -475,7 +441,7 @@ const actions = {
   },
 
   async 'pl-delete'(el) {
-    if (!confirm('Delete this playlist? The songs in the library remain.')) return;
+    if (!confirm('Delete this playlist? Your songs are not deleted.')) return;
     await API.deletePlaylist(el.dataset.pl);
     location.hash = '#/playlists';
   },
@@ -516,9 +482,9 @@ const actions = {
   async delete(el) {
     const row = el.closest('tr');
     const title = row?.querySelector('.t')?.firstChild?.textContent || 'this song';
-    if (!confirm(`Remove "${title}" from your library?\n\nFiles uploaded to the app are deleted. Files in your own scanned folders are never touched.`)) return;
+    if (!confirm(`Remove "${title}" from the shared library?\n\nIt disappears for everyone, including from their playlists. Files stored by this app are deleted; files in folders added by scanning are never touched.`)) return;
     const r = await API.deleteSong(el.dataset.id);
-    setStatus(r.file_deleted ? 'Song and file deleted' : 'Removed from library; server file was kept');
+    setStatus(r.file_deleted ? 'Song and its file deleted' : 'Removed from library; your original file was kept');
     route(true);
   },
 
@@ -526,7 +492,7 @@ const actions = {
     const out = $('#scan-out');
     el.disabled = true;
     out.className = 'dim';
-    out.textContent = 'Scanning server folder...';
+    out.textContent = 'Scanning...';
     try {
       const r = await API.triggerScan($('#scan-path').value.trim() || null, false);
       out.className = '';
@@ -542,59 +508,87 @@ const actions = {
 
   async login() {
     const msg = $('#login-msg');
-    const uname = $('#u-name')?.value.trim();
-    const pass = $('#u-pass')?.value;
-    if (!uname || !pass) {
-      msg.textContent = 'Please enter both username and password.';
-      return;
-    }
     try {
-      await API.login(uname, pass);
+      await API.login($('#lg-user').value, $('#pw').value);
       await refreshAuth();
-      route();
+      // a fresh login always starts at Home (never on a page left over from someone else)
+      if (location.hash === '#/home') route(); else location.hash = '#/home';
     } catch (err) {
-      msg.textContent = err.message || 'Login failed.';
+      msg.textContent = err instanceof AuthError ? 'Wrong username or password.' : err.message;
     }
   },
 
   async logout() {
     await API.logout();
     player.stop();
-    state.user = null;
     showLogin();
   },
 
-  async 'user-create'() {
-    const msg = $('#new-u-msg');
-    const uname = $('#new-u-name').value.trim();
-    const pass = $('#new-u-pass').value;
-    const isAdmin = $('#new-u-admin').checked;
-    if (!uname || !pass) {
-      msg.className = 'error';
-      msg.textContent = 'Username and password required.';
-      return;
-    }
+  account() {
+    const u = state.user;
+    openModal(`<h2>Account</h2>
+      <p class="dim">Signed in as ${esc(u.username)} (${u.role === 'admin' ? 'admin' : 'friend'})</p>
+      <label class="field"><span>Current password</span><input type="password" id="pw-cur" autocomplete="current-password"></label>
+      <label class="field"><span>New password (10+ characters)</span><input type="password" id="pw-new" autocomplete="new-password"></label>
+      <label class="field"><span>New password again</span><input type="password" id="pw-new2" autocomplete="new-password"></label>
+      <div class="row">
+        <button data-action="pw-save">Change password</button>
+        <button data-action="close-modal">Close</button>
+      </div>
+      <p id="pw-msg" class="error" style="margin-top:10px"></p>`);
+  },
+
+  async 'pw-save'() {
+    const msg = $('#pw-msg');
+    if ($('#pw-new').value !== $('#pw-new2').value) { msg.textContent = 'The two new passwords do not match.'; return; }
     try {
-      await API.registerUser(uname, pass, isAdmin);
-      msg.className = 'dim';
-      msg.textContent = `Account '${uname}' created successfully!`;
-      $('#new-u-name').value = '';
-      $('#new-u-pass').value = '';
-      route(true);
+      await API.changePassword($('#pw-cur').value, $('#pw-new').value);
+      closeModal();
+      setStatus('Password changed. Other devices were signed out.');
     } catch (err) {
-      msg.className = 'error';
+      if (err instanceof AuthError) throw err;
       msg.textContent = err.message;
     }
   },
 
-  async 'user-del'(el) {
-    if (!confirm(`Delete user account '${el.dataset.name}'?`)) return;
+  async 'user-create'() {
+    const msg = $('#nu-msg');
+    const name = $('#nu-name').value.trim();
     try {
-      await API.deleteUser(el.dataset.id);
+      await API.adminCreateUser(name, $('#nu-pw').value, $('#nu-role').value);
+      setStatus(`Created "${name.toLowerCase()}". Send them the username and password.`);
       route(true);
     } catch (err) {
-      alert(err.message);
+      if (err instanceof AuthError) throw err;
+      msg.textContent = err.message;
     }
+  },
+
+  'user-pw'(el) {
+    openModal(`<h2>Reset password</h2>
+      <p class="dim">New password for ${esc(el.dataset.name)}. They are signed out everywhere and must use it next time.</p>
+      <label class="field"><span>New password (10+ characters)</span><input id="rp-pw" autocomplete="off"></label>
+      <div class="row">
+        <button data-action="user-pw-save" data-id="${esc(el.dataset.id)}">Save</button>
+        <button data-action="close-modal">Cancel</button>
+      </div>
+      <p id="rp-msg" class="error" style="margin-top:10px"></p>`);
+  },
+
+  async 'user-pw-save'(el) {
+    try {
+      await API.adminUpdateUser(el.dataset.id, { password: $('#rp-pw').value });
+      closeModal();
+      setStatus('Password reset. Send them the new one.');
+    } catch (err) {
+      if (err instanceof AuthError) throw err;
+      $('#rp-msg').textContent = err.message;
+    }
+  },
+
+  async 'user-toggle'(el) {
+    await API.adminUpdateUser(el.dataset.id, { is_active: el.dataset.active !== 'true' });
+    route(true);
   },
 
   'close-modal': closeModal,
@@ -611,199 +605,63 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.target.id === 'u-pass' || e.target.id === 'u-name')) {
-    actions.login();
-  }
+  if (e.key === 'Enter' && (e.target.id === 'pw' || e.target.id === 'lg-user')) actions.login();
 });
 
-/* ==========================================================================
-   WALKMAN & PLAYER DECK INTEGRATION
-   ========================================================================== */
+/* ---------- player deck ---------- */
 
-function setupWalkmanUI() {
-  const walkman = $('#walkman-player');
-  const deckTrigger = $('#deck-trigger');
-  const deckExpand = $('#deck-expand');
-  const walkmanClose = $('#walkman-close');
+function setupDeck() {
+  const seek = $('#seek');
+  const vol = $('#vol');
+  const art = $('#art');
+  const REP = { all: 'REP:ALL', one: 'REP:ONE', off: 'REP:OFF' };
 
-  const openWalkman = () => {
-    state.walkmanOpen = true;
-    walkman.classList.add('open');
-    walkman.setAttribute('aria-hidden', 'false');
-  };
+  $('#b-play').addEventListener('click', () => player.togglePlayPause());
+  $('#b-prev').addEventListener('click', () => player.prev());
+  $('#b-next').addEventListener('click', () => player.next());
+  $('#b-shuf').addEventListener('click', () => player.toggleShuffle());
+  $('#b-rep').addEventListener('click', () => player.toggleRepeat());
 
-  const closeWalkman = () => {
-    state.walkmanOpen = false;
-    walkman.classList.remove('open');
-    walkman.setAttribute('aria-hidden', 'true');
-  };
+  seek.addEventListener('input', () => { state.seeking = true; $('#t-cur').textContent = fmt(Number(seek.value)); });
+  seek.addEventListener('change', () => { player.seek(Number(seek.value)); state.seeking = false; });
 
-  deckTrigger?.addEventListener('click', openWalkman);
-  deckExpand?.addEventListener('click', openWalkman);
-  walkmanClose?.addEventListener('click', closeWalkman);
-
-  // Mini deck buttons
-  $('#b-play-mini').addEventListener('click', (e) => { e.stopPropagation(); player.togglePlayPause(); });
-  $('#b-prev-mini').addEventListener('click', (e) => { e.stopPropagation(); player.prev(); });
-  $('#b-next-mini').addEventListener('click', (e) => { e.stopPropagation(); player.next(); });
-
-  // Walkman Jog Wheel Controls
-  $('#wm-jog-play').addEventListener('click', () => player.togglePlayPause());
-  $('#wm-jog-prev').addEventListener('click', () => player.prev());
-  $('#wm-jog-next').addEventListener('click', () => player.next());
-
-  // Volume up / down on Jog Wheel
-  $('#wm-jog-up').addEventListener('click', () => {
-    const cur = Number($('#wm-vol').value);
-    setVolume(Math.min(1, cur + 0.1));
-  });
-  $('#wm-jog-down').addEventListener('click', () => {
-    const cur = Number($('#wm-vol').value);
-    setVolume(Math.max(0, cur - 0.1));
+  try { vol.value = localStorage.getItem('adfree_vol') ?? vol.value; } catch { /* storage blocked */ }
+  player.setVolume(Number(vol.value)); // the slider and the audio element start in agreement
+  vol.addEventListener('input', () => {
+    player.setVolume(Number(vol.value));
+    try { localStorage.setItem('adfree_vol', vol.value); } catch { /* storage blocked */ }
   });
 
-  // Aux Walkman buttons
-  $('#wm-b-shuf').addEventListener('click', () => player.toggleShuffle());
-  $('#wm-b-rep').addEventListener('click', () => player.toggleRepeat());
-  $('#wm-pl-add').addEventListener('click', () => {
-    if (player.currentTrack) {
-      actions['pl-add']({ dataset: { id: player.currentTrack.id } });
-    }
-  });
-  $('#walkman-fav-top').addEventListener('click', () => {
-    if (player.currentTrack) {
-      actions.fav({ dataset: { id: player.currentTrack.id }, textContent: '' });
-    }
-  });
-
-  // Seek bar handling (both desktop and Walkman)
-  const seekDesk = $('#seek-desk');
-  const seekWm = $('#wm-seek');
-
-  const onSeekInput = (val) => {
-    state.seeking = true;
-    const t = fmt(Number(val));
-    $('#t-cur-desk').textContent = t;
-    $('#wm-t-cur').textContent = t;
-    seekDesk.value = val;
-    seekWm.value = val;
-  };
-
-  const onSeekChange = (val) => {
-    player.seek(Number(val));
-    state.seeking = false;
-  };
-
-  seekDesk.addEventListener('input', () => onSeekInput(seekDesk.value));
-  seekDesk.addEventListener('change', () => onSeekChange(seekDesk.value));
-  seekWm.addEventListener('input', () => onSeekInput(seekWm.value));
-  seekWm.addEventListener('change', () => onSeekChange(seekWm.value));
-
-  // Volume control handling
-  const volWm = $('#wm-vol');
-  function setVolume(v) {
-    const rounded = Math.round(v * 100) / 100;
-    volWm.value = rounded;
-    $('#wm-vol-pct').textContent = `${Math.round(rounded * 100)}%`;
-    player.setVolume(rounded);
-    try { localStorage.setItem('adfree_vol', rounded); } catch { /* ignore */ }
-  }
-
-  try {
-    const saved = localStorage.getItem('adfree_vol');
-    if (saved !== null) setVolume(Number(saved));
-  } catch { /* ignore */ }
-
-  volWm.addEventListener('input', () => setVolume(Number(volWm.value)));
-
-  // Player state subscriber
   player.subscribe((type, d) => {
     if (type === 'state') {
-      const isPlay = d.isPlaying;
-      // Icons & Buttons
-      $('#b-play-mini').textContent = isPlay ? '⏸' : '▶';
-      $('#wm-play-icon').textContent = isPlay ? '⏸' : '▶';
+      $('#b-play').textContent = d.isPlaying ? 'PAUSE' : 'PLAY';
+      $('#b-shuf').textContent = d.isShuffle ? 'SHUF:ON' : 'SHUF:OFF';
+      $('#b-shuf').classList.toggle('on', d.isShuffle);
+      $('#b-rep').textContent = REP[d.repeatMode];
+      $('#b-rep').classList.toggle('on', d.repeatMode !== 'off');
 
-      // Vinyl rotations
-      $('#mini-vinyl').classList.toggle('spinning', isPlay);
-      $('#vinyl-disc').classList.toggle('playing', isPlay);
-      $('#tonearm').classList.toggle('playing', isPlay);
-
-      // Walkman Screen Indicators
-      $('#wm-play-indicator').classList.toggle('playing', isPlay);
-      $('#wm-play-label').textContent = isPlay ? 'PLAY' : 'PAUSE';
-
-      // Modes
-      $('#wm-b-shuf').classList.toggle('on', d.isShuffle);
-      $('#wm-shuf-txt').textContent = d.isShuffle ? 'SHUF:ON' : 'SHUF';
-
-      const repModes = { all: 'REP:ALL', one: 'REP:ONE', off: 'REP' };
-      $('#wm-b-rep').classList.toggle('on', d.repeatMode !== 'off');
-      $('#wm-rep-txt').textContent = repModes[d.repeatMode] || 'REP';
-
-      // Current track info
       const t = d.track;
-      const title = t ? t.title : '-- nothing loaded --';
-      const sub = t ? `${t.artist_name || 'Unknown Artist'} / ${t.album_title || 'Unknown Album'}` : '\u00a0';
-
-      $('#np-title').textContent = title;
-      $('#np-sub').textContent = sub;
-      $('#wm-title').textContent = title;
-      $('#wm-sub').textContent = sub;
-
-      // Heart / favorite state
-      $('#wm-heart').textContent = t?.is_favorite ? '♥' : '♡';
-
-      // Format badge (codec/bitrate detection)
-      const badge = $('#wm-format-badge');
-      if (t) {
-        if (t.bitrate && t.bitrate >= 500) badge.textContent = `FLAC / ${Math.round(t.bitrate)}k`;
-        else if (t.bitrate) badge.textContent = `MP3 / ${Math.round(t.bitrate)}k`;
-        else badge.textContent = 'Hi-Fi STEREO';
-      } else {
-        badge.textContent = 'STANDBY';
-      }
-
-      // Vinyl Center Artwork
-      const vinylArt = $('#vinyl-art');
-      const miniArt = $('#mini-art');
-      if (t && t.artwork_url) {
-        const img = `<img src="${esc(t.artwork_url)}" alt="">`;
-        vinylArt.innerHTML = img;
-        miniArt.innerHTML = img;
-      } else {
-        vinylArt.innerHTML = '<span class="label-ph">SHONO</span>';
-        miniArt.textContent = '♫';
-      }
-
+      $('#np-title').textContent = t ? t.title : '-- nothing loaded --';
+      $('#np-sub').textContent = t ? `${t.artist_name || 'Unknown Artist'} / ${t.album_title || 'Unknown Album'}` : '\u00a0';
+      art.innerHTML = t && t.artwork_url ? `<img src="${esc(t.artwork_url)}" alt="">` : 'NO ART';
       document.title = t ? `${t.title} - ${t.artist_name || 'Unknown Artist'}` : 'AdFreeShono';
 
-      // Highlight active row in tables
       document.querySelectorAll('tr[data-id]').forEach((row) =>
         row.classList.toggle('playing', !!t && row.dataset.id === t.id));
-
     } else if (type === 'progress' && !state.seeking) {
-      const cur = d.currentTime || 0;
-      const dur = d.duration || 100;
-      seekDesk.max = dur;
-      seekDesk.value = cur;
-      seekWm.max = dur;
-      seekWm.value = cur;
-
-      $('#t-cur-desk').textContent = fmt(cur);
-      $('#t-dur-desk').textContent = fmt(dur);
-      $('#wm-t-cur').textContent = fmt(cur);
-      $('#wm-t-dur').textContent = fmt(dur);
-
+      seek.max = d.duration || 100;
+      seek.value = d.currentTime || 0;
+      $('#t-cur').textContent = fmt(d.currentTime);
+      $('#t-dur').textContent = fmt(d.duration);
     } else if (type === 'error') {
       setStatus(`Cannot play "${d.track.title}" (file missing?)`, true);
     }
   });
 
-  player.notifyState();
+  player.notifyState(); // draw the initial labels
 }
 
-/* ---------- Search ---------- */
+/* ---------- start ---------- */
 
 function setupSearch() {
   const input = $('#search');
@@ -818,10 +676,8 @@ function setupSearch() {
   });
 }
 
-/* ---------- App Start ---------- */
-
 document.addEventListener('DOMContentLoaded', async () => {
-  setupWalkmanUI();
+  setupDeck();
   setupSearch();
   window.addEventListener('hashchange', () => route());
 
@@ -829,6 +685,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigator.serviceWorker.register('/sw.js').catch(() => { /* optional */ });
   }
 
-  try { await refreshAuth(); } catch { /* ignored */ }
+  try { await refreshAuth(); } catch { /* the first real request will surface any problem */ }
+  if (!state.user) { showLogin(); return; }
   if (location.hash) route(); else location.hash = '#/home';
 });

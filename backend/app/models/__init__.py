@@ -1,7 +1,6 @@
-from .models import User, Artist, Album, Song, Playlist, PlaylistSong, Favorite, PlayHistory
+from .models import Artist, Album, Song, Playlist, PlaylistSong, Favorite, PlayHistory, User
 
 __all__ = [
-    "User",
     "Artist",
     "Album",
     "Song",
@@ -9,4 +8,5 @@ __all__ = [
     "PlaylistSong",
     "Favorite",
     "PlayHistory",
+    "User",
 ]

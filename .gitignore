@@ -69,3 +69,5 @@ backups/
 
 # Server data and music live next to the code on the server but are never committed
 music/
+tools/
+*.exe

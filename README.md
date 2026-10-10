@@ -20,7 +20,8 @@ A self-hosted, **100% Zero-Cost (₹0 / $0 recurring)** personal music library, 
 > Hosting it on the internet? See **DEPLOY.md**.
 
 ### 0. Configure
-Copy `.env.example` to `.env` and set `ACCESS_PASSWORD` (login for phone/Wi-Fi access) and `SECRET_KEY` (any long random string).
+Copy `.env.example` to `.env` and set `ADMIN_USERNAME`, `ADMIN_PASSWORD` (creates the first admin account on first start) and `SECRET_KEY` (32+ random characters).
+Friends get their own accounts from the **Admin** page. Everyone shares one library; playlists, likes and history are private to each person.
 Set `HOST=127.0.0.1` instead if you only want to use it on this PC.
 
 ### 1. Start the Server

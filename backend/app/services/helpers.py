@@ -1,20 +1,16 @@
 from typing import Optional
-from ..models import Song
+
+from ..models import Song, User
 from ..schemas import SongResponse
+from ..deps import can_edit_song
 
 
-def format_song_response(song: Song, user_id: Optional[str] = None) -> SongResponse:
+def format_song_response(song: Song, user: Optional[User] = None) -> SongResponse:
     artwork_url = None
     if song.album and song.album.artwork_path:
         artwork_url = f"/api/artwork/{song.album.artwork_path}"
     elif song.artist and song.artist.artwork_path:
         artwork_url = f"/api/artwork/{song.artist.artwork_path}"
-
-    # is_favorite is scoped per user; if no user_id given, always False
-    if user_id:
-        is_fav = any(f.user_id == user_id for f in song.favorite_entries)
-    else:
-        is_fav = False
 
     return SongResponse(
         id=song.id,
@@ -29,6 +25,7 @@ def format_song_response(song: Song, user_id: Optional[str] = None) -> SongRespo
         file_size=song.file_size,
         bitrate=song.bitrate,
         created_at=song.created_at,
-        is_favorite=is_fav,
-        uploader_id=song.uploader_id,
+        # likes are per person: only this user's own like counts
+        is_favorite=bool(user and any(f.user_id == user.id for f in song.favorites)),
+        can_edit=bool(user and can_edit_song(song, user)),
     )

@@ -12,9 +12,16 @@ from .schemas import (
     PlaylistResponse,
     PlaylistAddSong,
     LibraryStats,
+    UserPublic,
+    UserAdminView,
+    UserCreate,
+    UserAdminUpdate,
+    LoginRequest,
+    PasswordChange,
 )
 
 __all__ = [
+    "UserPublic", "UserAdminView", "UserCreate", "UserAdminUpdate", "LoginRequest", "PasswordChange",
     "ArtistBase",
     "ArtistResponse",
     "AlbumBase",
